@@ -20,7 +20,6 @@ class User(UserMixin, db.Model):
     google_token_expires_at = db.Column(db.DateTime)
     is_google_connected = db.Column(db.Boolean, default=False)
     auto_sync_minutes = db.Column(db.Integer, default=0)
-    open_to_new_ideas = db.Column(db.Boolean, default=True)
     keep_inbox_on_manual = db.Column(db.Boolean, default=True)
     last_synced_at = db.Column(db.DateTime)
     
