@@ -1,0 +1,105 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="settings-container admin-console">
+    <div class="settings-header">
+        <div>
+            <h1>Admin Console</h1>
+            <p class="settings-hint">Workspace-wide configuration for integrations and AI.</p>
+        </div>
+        <a href="{{ url_for('main.dashboard') }}" class="back-link-pill">
+            <span class="back-link-icon">&larr;</span>
+            Back to Dashboard
+        </a>
+    </div>
+
+    {% if missing_requirements %}
+    <div class="alert alert-error">
+        <strong>Action required:</strong>
+        <ul class="alert-list">
+            {% for requirement in missing_requirements %}
+            <li>{{ requirement }}</li>
+            {% endfor %}
+        </ul>
+    </div>
+    {% endif %}
+
+    {% if error %}
+    <div class="alert alert-error">
+        {{ error }}
+    </div>
+    {% endif %}
+
+    {% if success %}
+    <div class="alert alert-success">
+        {{ success }}
+    </div>
+    {% endif %}
+
+    <div class="settings-grid">
+        <div class="settings-card">
+            <h2>IMAP Configuration</h2>
+            <p class="settings-hint">
+                Credentials used when Gmail API access is unavailable. All users fall back to this inbox.
+            </p>
+            <form method="POST" class="settings-form">
+                <input type="hidden" name="form_name" value="imap">
+                <div class="form-group">
+                    <label for="imap_email">Email Address<span class="required">*</span></label>
+                    <input type="email"
+                           id="imap_email"
+                           name="imap_email"
+                           value="{{ imap_config.email or '' }}"
+                           required>
+                </div>
+                <div class="form-group">
+                    <label for="imap_password">IMAP Password<span class="required">*</span></label>
+                    <input type="password"
+                           id="imap_password"
+                           name="imap_password"
+                           placeholder="{% if imap_config.password %}••••••••{% else %}Enter password{% endif %}">
+                    <small>
+                        Use an app-specific password when your provider requires it.
+                        {% if imap_config.password %}Current password is stored securely.{% endif %}
+                    </small>
+                </div>
+                <div class="form-group">
+                    <label for="imap_server">IMAP Server</label>
+                    <input type="text"
+                           id="imap_server"
+                           name="imap_server"
+                           value="{{ imap_config.server or 'imap.gmail.com' }}">
+                </div>
+                <button type="submit" class="btn btn-primary">Save IMAP Settings</button>
+            </form>
+        </div>
+
+        <div class="settings-card">
+            <h2>OpenAI Configuration</h2>
+            <p class="settings-hint">
+                Required for AI summaries, smart labels, and preview insights. Stored securely in the database.
+            </p>
+            <form method="POST" class="settings-form">
+                <input type="hidden" name="form_name" value="openai">
+                <div class="form-group">
+                    <label for="openai_api_key">API Key<span class="required">*</span></label>
+                    <input type="password"
+                           id="openai_api_key"
+                           name="openai_api_key"
+                           placeholder="{% if openai_config.api_key %}••••••••{% else %}sk-...{% endif %}">
+                    <small>{% if openai_config.api_key %}Existing key is stored; submit a new one to rotate it.{% endif %}</small>
+                </div>
+                <div class="form-group">
+                    <label for="openai_model">Model</label>
+                    <input type="text"
+                           id="openai_model"
+                           name="openai_model"
+                           value="{{ openai_config.model or '' }}"
+                           placeholder="gpt-4o-mini, gpt-3.5-turbo, etc.">
+                </div>
+                <button type="submit" class="btn btn-primary">Save OpenAI Settings</button>
+            </form>
+        </div>
+    </div>
+</div>
+{% endblock %}

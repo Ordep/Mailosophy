@@ -1,0 +1,93 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="settings-container">
+    <div class="settings-header">
+        <div>
+            <h1>User Settings</h1>
+            <p class="settings-hint">Tailor Mailosophy to your workflow. These preferences apply only to you.</p>
+        </div>
+        <a href="{{ url_for('main.dashboard') }}" class="back-link-pill">
+            <span class="back-link-icon">&larr;</span>
+            Back to Dashboard
+        </a>
+    </div>
+
+    {% if error %}
+    <div class="alert alert-error">
+        {{ error }}
+    </div>
+    {% endif %}
+    
+    {% if success %}
+    <div class="alert alert-success">
+        {{ success }}
+    </div>
+    {% endif %}
+
+    <div class="settings-grid">
+        <div class="settings-card">
+            <h2>Account Snapshot</h2>
+            <div class="setting-item">
+                <label>Username:</label>
+                <span>{{ current_user.username }}</span>
+            </div>
+            <div class="setting-item">
+                <label>Email:</label>
+                <span>{{ current_user.email }}</span>
+            </div>
+        </div>
+
+        <div class="settings-card">
+            <h2>Google Workspace</h2>
+            <div class="setting-item">
+                <label>Status:</label>
+                <span>
+                    {% if current_user.is_google_connected %}
+                    <span class="status-connected">Connected</span>
+                    {% else %}
+                    <span class="status-disconnected">Not Connected</span>
+                    {% endif %}
+                </span>
+            </div>
+            {% if current_user.is_admin %}
+            <form method="POST" action="{{ url_for('email.purge_all_emails') }}" onsubmit="return confirm('Are you sure you want to permanently delete all emails?');">
+                <button type="submit" class="btn btn-danger btn-small" style="margin-top: 15px;">Delete All Emails</button>
+            </form>
+            {% endif %}
+        </div>
+
+        <div class="settings-card settings-card-wide">
+            <h2>Preferences &amp; Automation</h2>
+            <p class="settings-hint">Control refresh cadence and whether Mailosophy suggests new approaches.</p>
+            <form method="POST" class="settings-form">
+                <input type="hidden" name="form_name" value="preferences">
+                <div class="form-group">
+                    <label for="auto_sync_minutes">Auto sync interval (minutes)</label>
+                    <input type="number"
+                           id="auto_sync_minutes"
+                           name="auto_sync_minutes"
+                           min="0"
+                           max="720"
+                           value="{{ current_user.auto_sync_minutes or 0 }}">
+                    <small>Set to 0 to disable. Recommended: 15 minutes.</small>
+                </div>
+                <div class="form-group form-switch">
+                    <div>
+                        <label for="open_to_new_ideas">Open to new ideas</label>
+                        <small>Allow Mailosophy to proactively surface experimental labeling tips.</small>
+                    </div>
+                    <label class="switch">
+                        <input type="checkbox"
+                               id="open_to_new_ideas"
+                               name="open_to_new_ideas"
+                               {% if current_user.open_to_new_ideas %}checked{% endif %}>
+                        <span class="switch-slider"></span>
+                    </label>
+                </div>
+                <button type="submit" class="btn btn-primary">Save Preferences</button>
+            </form>
+        </div>
+    </div>
+</div>
+{% endblock %}

@@ -1,0 +1,62 @@
+﻿<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}Mailosophy - Email Organization{% endblock %}</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+    {% block extra_css %}{% endblock %}
+</head>
+<body>
+    {% if current_user.is_authenticated %}
+        <nav class="app-header">
+        <div class="app-header-shell">
+            <a href="{{ url_for('main.dashboard') }}" class="brand-mark">
+                <span class="brand-logo">
+                    <img src="{{ url_for('static', filename='img/logo.svg') }}" alt="Mailosophy logo">
+                </span>
+            </a>
+            <div class="header-meta">
+                <div class="stat-card mini meta-card">
+                    <span class="stat-label">Signed In</span>
+                    <span class="stat-value">{{ current_user.username|title }}</span>
+                </div>
+                <div class="stat-card mini meta-card">
+                    <span class="stat-label">Google Workspace</span>
+                    {% if current_user.is_google_connected %}
+                    <span class="stat-value positive">Connected</span>
+                    {% else %}
+                    <span class="stat-value warning">Not Linked</span>
+                    <span class="stat-meta">Connect to enable sync</span>
+                    {% endif %}
+                </div>
+            </div>
+            <div class="header-actions">
+                <a href="{{ url_for('main.settings') }}" class="header-btn ghost">Settings</a>
+                {% if current_user.is_admin %}
+                <a href="{{ url_for('main.admin_console') }}" class="header-btn ghost">Admin Console</a>
+                {% endif %}
+                <a href="{{ url_for('auth.logout') }}" class="header-btn solid">Logout</a>
+            </div>
+        </div>
+    </nav>
+    {% endif %}
+
+    <div class="container">
+        {% with messages = get_flashed_messages(with_categories=true) %}
+            {% if messages %}
+                {% for category, message in messages %}
+                    <div class="alert alert-{{ category }}">{{ message }}</div>
+                {% endfor %}
+            {% endif %}
+        {% endwith %}
+
+        {% block content %}{% endblock %}
+    </div>
+
+    <div id="toast-root" aria-live="polite" aria-atomic="true"></div>
+
+    <script src="{{ url_for('static', filename='js/main.js') }}"></script>
+    {% block extra_js %}{% endblock %}
+</body>
+</html>

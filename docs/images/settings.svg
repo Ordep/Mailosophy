@@ -1,0 +1,12 @@
+﻿<svg width='1400' height='800' xmlns='http://www.w3.org/2000/svg'>
+  <defs>
+    <linearGradient id='bg' x1='0%' y1='0%' x2='0%' y2='100%'>
+      <stop offset='0%' stop-color='#eff2ff'/>
+      <stop offset='100%' stop-color='#dfe6fb'/>
+    </linearGradient>
+  </defs>
+  <rect width='1400' height='800' fill='url(#bg)' />
+  <rect x='40' y='60' rx='30' ry='30' width='1320' height='680' fill='#fff' stroke='#d7dce8' stroke-width='4'/>
+  <text x='70' y='120' fill='#1f2a44' font-size='48' font-weight='600' font-family='Segoe UI, sans-serif'>User Settings</text>
+  <rect x='60' y='120' rx='20' ry='20' width='1280' height='120' fill='#f5f7ff' stroke='#c7d2fe' stroke-width='3'/><text x='90' y='190' fill='#312e81' font-size='36' font-family='Segoe UI, sans-serif'>Account Snapshot</text><rect x='60' y='280' rx='20' ry='20' width='1280' height='120' fill='#f5f7ff' stroke='#c7d2fe' stroke-width='3'/><text x='90' y='350' fill='#312e81' font-size='36' font-family='Segoe UI, sans-serif'>Workspace Connection</text><rect x='60' y='440' rx='20' ry='20' width='1280' height='120' fill='#f5f7ff' stroke='#c7d2fe' stroke-width='3'/><text x='90' y='510' fill='#312e81' font-size='36' font-family='Segoe UI, sans-serif'>Auto Sync Preferences</text>
+</svg>

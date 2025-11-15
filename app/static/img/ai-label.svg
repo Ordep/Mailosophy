@@ -1,0 +1,39 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 400">
+  <defs>
+    <linearGradient id="aiGrad1" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#00E5FF"></stop>
+      <stop offset="50%" stop-color="#00C3FF"></stop>
+      <stop offset="100%" stop-color="#A000FF"></stop>
+    </linearGradient>
+  </defs>
+
+  <!-- Rounded square frame -->
+  <rect x="40" y="40" width="320" height="320" rx="80" fill="none" stroke="url(#aiGrad1)" stroke-width="32"></rect>
+
+  <!-- AI text -->
+  <text x="200" y="235" text-anchor="middle" font-family="Segoe UI, system-ui, -apple-system, BlinkMacSystemFont, sans-serif" font-size="150" font-weight="700" fill="url(#aiGrad1)">
+    AI
+  </text>
+
+  <!-- Stars -->
+  <g fill="url(#aiGrad1)">
+    <!-- big star -->
+    <path d="M302 60
+             C312 90 330 108 360 118
+             C330 128 312 146 302 176
+             C292 146 274 128 244 118
+             C274 108 292 90 302 60Z"></path>
+    <!-- mid star -->
+    <path d="M346 86
+             C352 104 363 115 381 121
+             C363 127 352 138 346 156
+             C340 138 329 127 311 121
+             C329 115 340 104 346 86Z"></path>
+    <!-- small star -->
+    <path d="M332 40
+             C336 52 343 59 355 63
+             C343 67 336 74 332 86
+             C328 74 321 67 309 63
+             C321 59 328 52 332 40Z"></path>
+  </g>
+</svg>

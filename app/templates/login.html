@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+
+{% block title %}Login - Mailosophy{% endblock %}
+
+{% block content %}
+<div class="auth-shell">
+    <div class="auth-panel">
+        <div class="auth-hero">
+            <p class="auth-kicker">Mailosophy Workspace</p>
+            <h1>Sign in with Google to organize every inbox confidently.</h1>
+            <p class="auth-subtitle">
+                We use Google Workspace to authenticate and synchronize labels securely. Manual usernames or passwords are no longer supported.
+            </p>
+        </div>
+        <div class="auth-card glass">
+            {% if error %}
+            <div class="auth-alert">{{ error }}</div>
+            {% endif %}
+            <a href="{{ url_for('auth.google_login') }}" class="google-btn">
+                <span class="google-g">G</span>
+                Continue with Google
+            </a>
+            <p class="auth-note">Your Google account must have Mailosophy access granted by an administrator.</p>
+        </div>
+    </div>
+</div>
+{% endblock %}

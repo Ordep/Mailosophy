@@ -1,0 +1,297 @@
+{% extends "base.html" %}
+
+{% block title %}Dashboard - Mailosophy{% endblock %}
+
+{% block content %}
+<div class="dashboard-hero">
+    <div class="hero-banner">
+        <div class="hero-message">
+            <div class="hero-body">
+                <div class="hero-text">
+                    <p class="hero-kicker">Smart email workspace</p>
+                    <h1>Stay organized, label faster, stay in sync.</h1>
+                    <p class="hero-desc">
+                        Mailosophy pairs thoughtful AI insights with disciplined workflows so every inbox decision is intentional, documented, and confidently executed.
+                    </p>
+                </div>
+                <div class="hero-action-stack hero-top-sync">
+                    <button type="button"
+                            class="hero-action-btn primary"
+                            id="syncBtn"
+                            title="Enable auto sync in Settings to keep Mailosophy fresh.">
+                        <span class="hero-action-title">Sync Emails</span>
+                        <span class="hero-action-subtitle">Pull the latest conversations</span>
+                    </button>
+                    <div class="hero-sync-meta" role="status">
+                        <p class="hero-sync-line">
+                            {{ auto_sync_text }}
+                        </p>
+                        <p class="hero-sync-line">
+                            Last refreshed {{ last_refresh_display if last_refresh_display else 'Not synced yet' }}.
+                        </p>
+                    </div>
+                </div>
+            </div>
+            <div class="hero-footer">
+                <div class="hero-footer-content">
+                    <div class="hero-toolbar footer">
+                        <div class="toolbar-left">
+                            <div class="layout-control" role="group" aria-label="Card layout">
+                                <span class="layout-label">Cards per row</span>
+                                <div class="layout-toggle">
+                                    <button type="button" class="layout-option" data-layout="1" title="Single column">1</button>
+                                    <button type="button" class="layout-option" data-layout="2" title="Two columns">2</button>
+                                    <button type="button" class="layout-option" data-layout="3" title="Three columns">3</button>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="toolbar-right">
+                            <div class="search-control">
+                                <input type="text" id="searchInput" placeholder="Search emails..." class="search-box">
+                            </div>
+                            <button type="button" class="toolbar-action" id="deleteEmailsBtn" disabled>Delete Selected</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+    </div>
+</div>
+<div class="dashboard-container"
+     id="dashboardPage"
+     data-selected-label="{{ selected_label if selected_label else '' }}"
+     data-force-all="{{ '1' if force_all else '0' }}"
+     data-inbox-label="{{ inbox_label.id if inbox_label else '' }}">
+    <aside class="sidebar">
+        <div class="sidebar-header">
+            <h2>Labels</h2>
+            <button class="btn-add" id="addLabelBtn">+ New Label</button>
+        </div>
+        <div class="labels-list">
+            <div class="quick-nav">
+                <a href="{{ url_for("main.dashboard", label="all") }}"
+                   class="quick-card {% if force_all %}active{% endif %}">
+                    <div class="quick-card-icon">&#128194;</div>
+                    <div class="quick-card-meta">
+                        <span class="quick-card-title">All Emails</span>
+                        <span class="quick-card-count" data-quick-count="all">{{ total_emails }}</span>
+                    </div>
+                </a>
+                {% if inbox_label %}
+                <a href="{{ url_for("main.dashboard", label=inbox_label.id) }}"
+                   class="quick-card inbox {% if not force_all and selected_label == inbox_label.id %}active{% endif %}">
+                    <div class="quick-card-icon">&#128229;</div>
+                    <div class="quick-card-meta">
+                        <span class="quick-card-title">{{ inbox_label.name }}</span>
+                        <span class="quick-card-count" data-quick-count="inbox">{{ inbox_count }}</span>
+                    </div>
+                </a>
+                {% endif %}
+            </div>
+
+            <div class="label-section-header">Labels</div>
+
+            {% macro render_label_nodes(nodes, selected_label, level=0) %}
+            <ul class="label-tree-list level-{{ level }}">
+                {% for node in nodes %}
+                {% set has_children = node.children and node.children|length %}
+                <li class="label-tree-node collapsed" data-level="{{ level }}">
+                    <div class="label-tree-row {% if node.label and selected_label == node.label.id %}active{% endif %}"
+                         {% if node.label %}
+                         data-label-id="{{ node.label.id }}"
+                         data-label-name="{{ node.label.name|e }}"
+                         {% endif %}>
+                        {% if has_children %}
+                        <button type="button" class="label-tree-toggle" aria-label="Toggle sublabels">+</button>
+                        {% else %}
+                        <span class="label-tree-toggle placeholder"></span>
+                        {% endif %}
+                        <span class="label-tree-branch"></span>
+                        {% if node.label %}
+                            <a href="{{ url_for("main.dashboard", label=node.label.id) }}" class="label-tree-link">
+                                <span class="label-color-dot" style="background-color: {{ node.label.color }}"></span>
+                                {{ node.name }}
+                            </a>
+                        {% else %}
+                            <span class="label-tree-text">
+                                <span class="label-color-dot muted"></span>
+                                {{ node.name }}
+                            </span>
+                        {% endif %}
+                    </div>
+                    {% if has_children %}
+                        {{ render_label_nodes(node.children, selected_label, level + 1) }}
+                    {% endif %}
+                </li>
+                {% endfor %}
+            </ul>
+            {% endmacro %}
+
+            <div class="label-tree-root">
+                {{ render_label_nodes(label_tree, selected_label) }}
+            </div>
+        </div>
+    </aside>
+
+    <main class="main-content">
+        <div class="dashboard-header">
+            <h1>Your Emails</h1>
+        </div>
+
+                <div class="emails-container">
+            {% if emails.items %}
+            <div class="emails-grid layout-3" id="emailsGrid">
+                {% for email in emails.items %}
+                <div class="email-card {% if email.ai_suggested_labels and not email.ai_suggestion_applied %}email-card-highlight{% endif %}"
+                     data-email-id="{{ email.id }}"
+                     draggable="true">
+                    <div class="email-card-main">
+                        <div class="email-card-info" onclick="window.location.href='{{ url_for('email.view_email', email_id=email.id) }}'">
+                            <div class="email-card-top">
+                                <div class="email-card-sender">{{ email.sender }}</div>
+                                <div class="email-card-date">{{ email.received_date.strftime("%b %d, %Y") }}</div>
+                            </div>
+                            <div class="email-card-subject">{{ email.subject }}</div>
+                            {% if email.card_summary %}
+                            <div class="email-card-summary ai-summary-row" title="AI generated summary">
+                                <span class="ai-summary-icon" aria-hidden="true"></span>
+                                <span class="ai-summary-text">{{ email.card_summary }}</span>
+                            </div>
+                            {% else %}
+                            {% set preview_text = (email.body or '') %}
+                            <div class="email-card-preview">
+                                {{ preview_text[:160] }}{% if preview_text|length > 160 %}&hellip;{% endif %}
+                            </div>
+                            {% endif %}
+                            {% if email.ai_preview_labels %}
+                            <div class="ai-inline-suggestions">
+                                <div class="ai-inline-chip-list">
+                                    {% for label in email.ai_preview_labels %}
+                                    <span class="ai-chip ai-chip-inline ai-chip-action"
+                                          data-email-id="{{ email.id }}"
+                                          data-label="{{ label }}"
+                                          aria-label="AI suggested label {{ label }}">
+                                        <span class="ai-chip-icon" aria-hidden="true"></span>
+                                        <span class="ai-chip-text">{{ label }}</span>
+                                        <button type="button"
+                                                class="ai-remove-btn"
+                                                data-email-id="{{ email.id }}"
+                                                data-label="{{ label }}">&times;</button>
+                                    </span>
+                                    {% endfor %}
+                                </div>
+                            </div>
+                            {% endif %}
+                        </div>
+                        <div class="email-card-actions">
+                            <label class="checkbox-pill">
+                                <input type="checkbox" class="email-select" data-email-id="{{ email.id }}">
+                                <span></span>
+                            </label>
+                            <button type="button"
+                                    class="email-delete-btn icon-btn"
+                                    data-email-id="{{ email.id }}"
+                                    title="Delete this email"
+                                    aria-label="Delete this email">
+                                <svg viewBox="0 0 24 24" role="presentation" focusable="false">
+                                    <path d="M10 3a2 2 0 0 0-2 2v1H5.5a.5.5 0 0 0 0 1H6v13a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V7h.5a.5.5 0 0 0 0-1H16V5a2 2 0 0 0-2-2h-4zm1 2h2a1 1 0 0 1 1 1v1h-4V6a1 1 0 0 1 1-1zm-2.5 4h1a.5.5 0 0 1 .5.5v8a.5.5 0 0 1-1 0v-8a.5.5 0 0 1 .5-.5zm5 0h1a.5.5 0 0 1 .5.5v8a.5.5 0 0 1-1 0v-8a.5.5 0 0 1 .5-.5z"></path>
+                                </svg>
+                            </button>
+                        </div>
+                    </div>
+                    <div class="email-labels">
+                        {% for label in email.labels %}
+                        <span class="label-badge" style="background-color: {{ label.color }}">
+                            <span class="label-badge-name">{{ label.name }}</span>
+                            <button type="button"
+                                    class="label-badge-remove"
+                                    data-email-id="{{ email.id }}"
+                                    data-label-id="{{ label.id }}"
+                                    title="Remove label">&times;</button>
+                        </span>
+                        {% endfor %}
+                    </div>
+                </div>
+                {% endfor %}
+            </div>
+<!-- Pagination -->
+                <div class="pagination">
+                    {% if emails.has_prev %}
+                    <a href="{{ url_for("main.dashboard", page=emails.prev_num, label=selected_label if not force_all else "all") }}" class="page-nav">&larr; Prev</a>
+                    {% else %}
+                    <span class="page-nav disabled">&larr; Prev</span>
+                    {% endif %}
+                    <div class="page-pill">
+                        <span>Page</span>
+                        <strong>{{ emails.page }}</strong>
+                        <span>of {{ emails.pages }}</span>
+                    </div>
+                    {% if emails.has_next %}
+                    <a href="{{ url_for("main.dashboard", page=emails.next_num, label=selected_label if not force_all else "all") }}" class="page-nav">Next &rarr;</a>
+                    {% else %}
+                    <span class="page-nav disabled">Next &rarr;</span>
+                    {% endif %}
+                </div>
+            {% else %}
+                <div class="empty-state">
+                    <h2>No emails yet</h2>
+                    <p>Click the "Sync Emails" button to import emails from your account</p>
+                </div>
+            {% endif %}
+        </div>
+    </main>
+</div>
+
+<!-- Modal for creating new label -->
+<div id="addLabelModal" class="modal">
+    <div class="modal-content">
+        <span class="modal-close">&times;</span>
+        <h2>Create New Label</h2>
+        <form id="labelForm">
+            <div class="form-group">
+                <label for="labelName">Label Name</label>
+                <input type="text" id="labelName" required>
+            </div>
+            <div class="form-group">
+                <label for="labelColor">Color</label>
+                <input type="color" id="labelColor" value="#0084FF">
+            </div>
+            <div class="form-group">
+                <label for="labelDesc">Description</label>
+                <textarea id="labelDesc" rows="3"></textarea>
+            </div>
+            <button type="submit" class="btn btn-primary">Create Label</button>
+        </form>
+    </div>
+</div>
+
+<!-- Modal for sync progress -->
+<div id="syncModal" class="modal sync-modal">
+    <div class="modal-content sync-modal-content">
+        <h2 id="syncModalTitle">Syncing Emails...</h2>
+        <div class="sync-progress-container">
+            <div class="sync-status-icon" id="syncStatusIcon">&#8635;</div>
+            <div class="sync-status-text" id="syncStatusText">Connecting to server...</div>
+            <div class="sync-progress-bar">
+                <div class="sync-progress-fill" id="syncProgressFill"></div>
+            </div>
+            <div class="sync-progress-percentage" id="syncProgressPercentage">0%</div>
+        </div>
+        <div class="sync-modal-actions">
+            <button class="btn btn-small" id="cancelSyncBtn" onclick="cancelSync()">Cancel Sync</button>
+        </div>
+    </div>
+</div>
+
+<script>
+window.Mailosophy_AUTO_SYNC_MINUTES = {{ auto_sync_minutes or 0 }};
+</script>
+<script src="{{ url_for("static", filename="js/dashboard.js") }}"></script>
+{% endblock %}
+
+
+
+
+
+
+
+

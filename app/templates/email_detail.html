@@ -1,0 +1,464 @@
+{% extends "base.html" %}
+
+{% block title %}{{ email.subject }} - Mailosophy{% endblock %}
+
+{% block content %}
+<div class="email-detail-shell">
+    <div class="email-view-banner">
+        <div class="email-view-banner-left">
+            <p class="email-view-kicker">Message overview</p>
+            <h1 class="email-view-title">{{ email.subject }}</h1>
+            <div class="email-view-meta-line">
+                <span class="meta-chip">{{ email.sender }}</span>
+                <span class="meta-dot">&bull;</span>
+                <span class="meta-chip subtle">{{ email.received_date.strftime('%B %d, %Y at %I:%M %p') }}</span>
+            </div>
+        </div>
+        <div class="email-view-banner-right">
+            <div class="email-banner-stat">
+                <span class="stat-label">Labels</span>
+                <span class="stat-value">{{ email.labels|length }}</span>
+            </div>
+            <div class="email-banner-stat">
+                <span class="stat-label">AI Suggestions</span>
+                <span class="stat-value">{{ ai_suggestions|length }}</span>
+            </div>
+            <div class="email-banner-actions">
+                <button type="button"
+                        class="hero-back-btn"
+                        onclick="window.location.href='{{ url_for('main.dashboard') }}'">
+                    <span class="back-link-icon">&larr;</span>
+                    Back to Dashboard
+                </button>
+                <button type="button"
+                        class="email-delete-action"
+                        id="deleteEmailBtn">
+                    Delete Email
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <div class="email-detail-grid">
+        <section class="email-panel email-info-panel">
+            <div class="panel-header">
+                <h2>Message Details</h2>
+            </div>
+            <div class="info-grid">
+                <div class="info-block">
+                    <span class="field-label">From</span>
+                    <p>{{ email.sender }}</p>
+                </div>
+                <div class="info-block">
+                    <span class="field-label">Received</span>
+                    <p>{{ email.received_date.strftime('%A, %B %d, %Y at %I:%M %p') }}</p>
+                </div>
+            </div>
+        </section>
+
+        {% macro render_label_picker(nodes, applied_ids, level=0) %}
+        <ul class="label-tree-list level-{{ level }}">
+            {% for node in nodes %}
+            {% set has_children = node.children and node.children|length %}
+            {% set label_obj = node.label %}
+            {% set is_assigned = label_obj and label_obj.id in applied_ids %}
+            <li class="label-tree-node collapsed" data-level="{{ level }}">
+                <div class="label-tree-row {% if is_assigned %}is-assigned{% endif %}"
+                     {% if label_obj and not is_assigned %}
+                     data-label-id="{{ label_obj.id }}"
+                     data-label-name="{{ label_obj.name|e }}"
+                     role="button"
+                     tabindex="0"
+                     {% endif %}>
+                    {% if has_children %}
+                    <button type="button" class="label-tree-toggle" aria-label="Toggle sublabels">+</button>
+                    {% else %}
+                    <span class="label-tree-toggle placeholder"></span>
+                    {% endif %}
+                    <span class="label-tree-branch"></span>
+                    {% if label_obj %}
+                    <span class="label-tree-link">
+                        <span class="label-color-dot" style="background-color: {{ label_obj.color }}"></span>
+                        {{ node.name }}
+                    </span>
+                    {% else %}
+                    <span class="label-tree-text">
+                        <span class="label-color-dot muted"></span>
+                        {{ node.name }}
+                    </span>
+                    {% endif %}
+                    {% if is_assigned %}
+                    <span class="label-tree-status">Applied</span>
+                    {% endif %}
+                </div>
+                {% if has_children %}
+                    {{ render_label_picker(node.children, applied_ids, level + 1) }}
+                {% endif %}
+            </li>
+            {% endfor %}
+        </ul>
+        {% endmacro %}
+
+        <section class="email-panel email-label-panel">
+            <div class="panel-header">
+                <h2>Labels</h2>
+                <div class="panel-actions">
+                    <button type="button" class="btn-pill" id="regenerateSuggestionsBtn">
+                        <span class="btn-dot"></span>
+                        Regenerate Suggestions
+                    </button>
+                </div>
+            </div>
+            <div class="labels-container">
+                {% for label in email.labels %}
+                <span class="label-tag" style="background-color: {{ label.color }}">
+                    {{ label.name }}
+                    <button class="label-badge-remove" data-label-id="{{ label.id }}" onclick="removeLabel(event, {{ label.id }})">&times;</button>
+                </span>
+                {% endfor %}
+                <div id="aiSuggestionContainer"></div>
+            </div>
+            <div class="label-form">
+                <div class="label-picker">
+                    <button type="button" class="label-picker-btn" id="labelPickerBtn">
+                        <span>Add / Move to label</span>
+                        <span class="label-picker-caret">&#9662;</span>
+                    </button>
+                    <div class="label-picker-panel" id="labelPickerPanel">
+                        {% if label_tree %}
+                            {{ render_label_picker(label_tree, applied_label_ids) }}
+                        {% else %}
+                            <p class="label-picker-empty">No available labels.</p>
+                        {% endif %}
+                    </div>
+                </div>
+            </div>
+        </section>
+    </div>
+
+    <section class="email-panel email-body-panel">
+        <div class="panel-header">
+            <h2>Message Content</h2>
+            <div class="font-size-controls">
+                <button class="btn-font-size" onclick="adjustFontSize('decrease')" title="Decrease font size">A-</button>
+                <button class="btn-font-size" onclick="resetFontSize()" title="Reset font size">A</button>
+                <button class="btn-font-size" onclick="adjustFontSize('increase')" title="Increase font size">A+</button>
+            </div>
+        </div>
+        <div class="email-body-content" id="emailBodyContent">
+            {% if email.html_body and email.html_body.strip() %}
+                <div class="email-html-body">{{ email.html_body|safe }}</div>
+            {% elif email.body and email.body.strip() %}
+                <pre class="email-text-body">{{ email.body }}</pre>
+            {% else %}
+                <p class="email-no-content">(No message content available)</p>
+            {% endif %}
+        </div>
+    </section>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+const emailId = {{ email.id }};
+let currentSuggestions = {{ ai_suggestions|tojson }} || [];
+
+async function removeLabel(event, labelId) {
+    event.stopPropagation();
+    try {
+        const response = await fetch(`/email/${emailId}/label/${labelId}`, {
+            method: 'DELETE',
+            credentials: 'same-origin'
+        });
+        const data = await response.json();
+        if (data.success) {
+            location.reload();
+        } else {
+            alert(data.message || 'Unable to remove label.');
+        }
+    } catch (error) {
+        console.error('Error:', error);
+        alert('An error occurred while removing the label.');
+    }
+}
+
+let currentFontSize = Number(localStorage.getItem('emailFontSize')) || 100;
+
+function applyFontSize() {
+    const bodyContent = document.getElementById('emailBodyContent');
+    if (bodyContent) {
+        bodyContent.style.fontSize = currentFontSize + '%';
+    }
+}
+
+function adjustFontSize(action) {
+    if (action === 'increase') {
+        currentFontSize = Math.min(currentFontSize + 10, 200);
+    } else if (action === 'decrease') {
+        currentFontSize = Math.max(currentFontSize - 10, 60);
+    }
+    localStorage.setItem('emailFontSize', currentFontSize);
+    applyFontSize();
+}
+
+function resetFontSize() {
+    currentFontSize = 100;
+    localStorage.setItem('emailFontSize', currentFontSize);
+    applyFontSize();
+}
+
+const labelPickerBtn = document.getElementById('labelPickerBtn');
+const labelPickerPanel = document.getElementById('labelPickerPanel');
+
+function closeLabelPicker() {
+    if (labelPickerPanel) {
+        labelPickerPanel.classList.remove('open');
+    }
+}
+
+async function addLabelToEmail(labelId, labelName, rowEl) {
+    if (!labelId) {
+        return;
+    }
+    if (rowEl) {
+        rowEl.classList.add('is-loading');
+    }
+    try {
+        const response = await fetch(`/email/${emailId}/label`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            credentials: 'same-origin',
+            body: JSON.stringify({ label_id: Number(labelId) })
+        });
+        const data = await response.json();
+        if (data.success) {
+            closeLabelPicker();
+            location.reload();
+        } else {
+            alert(data.message || 'Unable to add label.');
+            if (rowEl) {
+                rowEl.classList.remove('is-loading');
+            }
+        }
+    } catch (error) {
+        console.error('Error adding label:', error);
+        alert('An error occurred while adding the label.');
+        if (rowEl) {
+            rowEl.classList.remove('is-loading');
+        }
+    }
+}
+
+function refreshPickerToggle(node) {
+    if (!node) return;
+    const row = node.firstElementChild;
+    if (!row || !row.classList.contains('label-tree-row')) {
+        return;
+    }
+    const toggle = row.querySelector('.label-tree-toggle');
+    if (!toggle || toggle.classList.contains('placeholder')) {
+        return;
+    }
+    const collapsed = node.classList.contains('collapsed');
+    toggle.textContent = collapsed ? '+' : '-';
+    toggle.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+}
+
+if (labelPickerBtn && labelPickerPanel) {
+    labelPickerBtn.addEventListener('click', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        labelPickerPanel.classList.toggle('open');
+    });
+
+    document.addEventListener('click', (event) => {
+        if (!labelPickerPanel.contains(event.target) &&
+            !labelPickerBtn.contains(event.target)) {
+            closeLabelPicker();
+        }
+    });
+}
+
+if (labelPickerPanel) {
+    labelPickerPanel.querySelectorAll('.label-tree-node').forEach(node => {
+        const parentNode = node.parentElement.closest('.label-tree-node');
+        if (!parentNode) {
+            node.classList.remove('collapsed');
+        }
+        refreshPickerToggle(node);
+    });
+
+    labelPickerPanel.querySelectorAll('.label-tree-toggle').forEach(toggle => {
+        if (toggle.classList.contains('placeholder')) {
+            return;
+        }
+        toggle.addEventListener('click', (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            const node = toggle.closest('.label-tree-node');
+            if (!node) return;
+            node.classList.toggle('collapsed');
+            refreshPickerToggle(node);
+        });
+    });
+
+    labelPickerPanel.querySelectorAll('.label-tree-row[data-label-id]').forEach(row => {
+        row.addEventListener('click', (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            const labelId = row.dataset.labelId;
+            const labelName = row.dataset.labelName || '';
+            addLabelToEmail(labelId, labelName, row);
+        });
+    });
+}
+
+const aiSuggestionContainer = document.getElementById('aiSuggestionContainer');
+const regenerateBtn = document.getElementById('regenerateSuggestionsBtn');
+const deleteEmailBtn = document.getElementById('deleteEmailBtn');
+
+function renderSuggestionChips(list) {
+    if (!aiSuggestionContainer) return;
+    if (!list || !list.length) {
+        aiSuggestionContainer.innerHTML = '<p class="ai-suggestion-empty inline">No AI suggestions.</p>';
+        return;
+    }
+    const items = list.map(label => `
+        <div class="label-tag label-tag-suggestion ai-chip-action" data-label="${label}">
+            <span class="ai-chip" aria-label="AI suggested label ${label}">
+                <span class="ai-chip-icon" aria-hidden="true"></span>
+                <span class="ai-chip-text">${label}</span>
+                <button type="button"
+                        class="ai-remove-btn"
+                        data-label="${label}">
+                    &times;
+                </button>
+            </span>
+        </div>
+    `).join('');
+    aiSuggestionContainer.innerHTML = items;
+}
+
+async function applyAiLabel(label) {
+    if (!label) return;
+    try {
+        const response = await fetch(`/email/${emailId}/ai-accept`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'same-origin',
+            body: JSON.stringify({ label })
+        });
+        const data = await response.json();
+        if (data.success) {
+            setTimeout(() => window.location.reload(), 400);
+        } else {
+            alert(data.message || 'Failed to apply AI label.');
+        }
+    } catch (error) {
+        console.error('Error applying AI label:', error);
+        alert('An error occurred while applying the label.');
+    }
+}
+
+if (aiSuggestionContainer) {
+    aiSuggestionContainer.addEventListener('click', async (event) => {
+        const removeBtn = event.target.closest('.ai-remove-btn');
+        if (removeBtn) {
+            const label = removeBtn.dataset.label;
+            if (!label) return;
+            removeBtn.disabled = true;
+            try {
+                const response = await fetch(`/email/${emailId}/ai-dismiss`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    credentials: 'same-origin',
+                    body: JSON.stringify({ label })
+                });
+                const data = await response.json();
+                if (data.success) {
+                    currentSuggestions = currentSuggestions.filter(item => item !== label);
+                    renderSuggestionChips(currentSuggestions);
+                } else {
+                    alert(data.message || 'Failed to remove suggestion');
+                    removeBtn.disabled = false;
+                }
+            } catch (err) {
+                console.error(err);
+                alert('Error removing suggestion');
+                removeBtn.disabled = false;
+            }
+            return;
+        }
+
+        const chip = event.target.closest('.ai-chip-action');
+        if (chip) {
+            applyAiLabel(chip.dataset.label);
+        }
+    });
+}
+
+if (regenerateBtn) {
+    regenerateBtn.addEventListener('click', async () => {
+        regenerateBtn.disabled = true;
+        regenerateBtn.textContent = 'Generating...';
+        try {
+            const response = await fetch(`/email/${emailId}/ai-suggest`, {
+                method: 'POST',
+                credentials: 'same-origin'
+            });
+            const data = await response.json();
+            if (data.success) {
+                currentSuggestions = data.suggestions || [];
+                renderSuggestionChips(currentSuggestions);
+            } else {
+                alert(data.message || 'Failed to generate suggestions');
+            }
+        } catch (err) {
+            console.error(err);
+            alert('Error generating suggestions');
+        } finally {
+            regenerateBtn.disabled = false;
+            regenerateBtn.textContent = 'Regenerate Suggestions';
+        }
+    });
+}
+
+if (deleteEmailBtn) {
+    deleteEmailBtn.addEventListener('click', async () => {
+        if (!confirm('Delete this email? This cannot be undone.')) {
+            return;
+        }
+        deleteEmailBtn.disabled = true;
+        try {
+            const response = await fetch('/email/delete', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                credentials: 'same-origin',
+                body: JSON.stringify({ email_ids: [Number(emailId)] })
+            });
+            const data = await response.json();
+            if (data.success) {
+                window.location.href = '{{ url_for("main.dashboard") }}';
+            } else {
+                alert(data.message || 'Failed to delete email.');
+                deleteEmailBtn.disabled = false;
+            }
+        } catch (error) {
+            console.error('Error deleting email:', error);
+            alert('An error occurred while deleting the email.');
+            deleteEmailBtn.disabled = false;
+        }
+    });
+}
+
+renderSuggestionChips(currentSuggestions);
+applyFontSize();
+</script>
+{% endblock %}
+
+
+
