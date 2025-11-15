@@ -1,103 +1,92 @@
 # Mailosophy - Email Organization Web Application
 
-A modern web application for organizing emails with AI-powered labeling and categorization.
+A modern web application that blends Gmail automation with AI-powered summaries and label suggestions so teams can triage every inbox with confidence.
 
 ## Features
 
 **Email Management**
-- Import emails directly from Gmail using the Gmail API
-- View email details with full formatting support
-- Search and filter emails
-- Mark emails as read/starred
+- Card-based dashboard with adjustable 1�3 column layouts, search, pagination, and quick All/Inboxes shortcuts
+- Multi-select with bulk delete plus per-email delete (mirrors Gmail trash)
+- Email detail page redesigned to match the dashboard style with structured metadata and footer actions
 
 **Intelligent Labeling**
-- Pre-defined labels: Work, Important, Personal, Newsletter, Spam, Social
-- AI-powered automatic label suggestions based on email content
-- Create custom labels with custom colors
-- Assign multiple labels per email
+- Hierarchical label tree synced from Gmail (system folders hidden or relocated automatically)
+- Drag-and-drop single or multi-selected emails onto labels; Inbox is removed automatically unless you opt out
+- Label dropdown in the detail view mirrors the tree logic and syncs changes back to Gmail instantly
 
-**User Accounts**
-- Secure user authentication
-- Google Workspace linking per user
-- Personal email organization
+**User Accounts & Access**
+- Google OAuth-only login; every action runs on behalf of the signed-in Google Workspace user
+- Settings page for personal preferences (auto-sync cadence, Inbox retention toggle, drag-and-drop behavior)
+- Admin console for tenant-wide Gmail/OpenAI configuration and user-scoped maintenance commands
 
 **Modern Interface**
-- Responsive dashboard design
-- Sidebar navigation
-- Email preview and detail views
-- Intuitive label management
+- Sticky header with brand mark, live status cards, and quick actions (Settings, Admin, Logout)
+- Hero banner with workflow messaging, auto-sync status, and toolbar for layout/search/bulk delete
+- Responsive CSS design system applied consistently across dashboard, email detail, admin, and settings
 
-**AI Suggestions**
-- Generate OpenAI-powered label suggestions per email
-- Highlight emails with pending suggestions on the dashboard
-- Accept suggestions to apply labels and push them back to Gmail
+**AI Workflows**
+- OpenAI-powered summaries replace raw body previews on every email card
+- AI label chips with Mailosophy-specific iconography appear on cards and the email detail page
+- Clicking an AI chip applies the label immediately and syncs it to Gmail; Inbox retention obeys user preference
+
+**Automation & Sync**
+- Manual sync with streaming Server-Sent Events feedback (connecting, processing, cleaning, etc.)
+- Optional auto sync every _n_ minutes per user; runs silently and updates the "last refreshed" banner text
+- Label refresh is part of every sync; drag-and-drop/manual label changes notify Gmail in real time
 
 ## Tech Stack
 
-- **Backend**: Python with Flask
-- **Database**: SQLAlchemy (SQLite)
-- **Frontend**: HTML, CSS, JavaScript
-- **AI**: Scikit-learn for email classification
-- **Email**: Gmail API integration
+- **Backend**: Python (Flask) with Blueprints, Flask-Login, Flask-WTF, and streaming SSE endpoints
+- **Database**: SQLAlchemy ORM on SQLite (default) with lightweight migration helper (`scripts/upgrade_schema.py`)
+- **Frontend**: Jinja2 templates, custom CSS design system, and vanilla JavaScript modules (`dashboard.js`, etc.)
+- **AI**: OpenAI API for label suggestions + card summaries, with heuristics in `app/utils/ai_labeler.py`
+- **Integrations**: Google OAuth 2.0 + Gmail API (labels, message fetch, trash, drag-and-drop syncing)
 
 ## Installation
 
 ### Prerequisites
 - Python 3.8+
-- pip package manager
+- `pip`
+- Google Cloud project with Gmail API enabled
 
 ### Setup
 
-1. Clone the repository:
-```bash
-cd Mailosophy
-```
-
-2. Create virtual environment:
-```bash
-python -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
-```
-
+1. Clone the repository and move into the folder:
+   ```bash
+   git clone <repo-url>
+   cd Mailosophy
+   ```
+2. Create and activate a virtual environment:
+   ```bash
+   python -m venv venv
+   # Windows
+   venv\Scripts\activate
+   # macOS/Linux
+   source venv/bin/activate
+   ```
 3. Install dependencies:
-```bash
-pip install -r requirements.txt
-```
-
-4. Configure environment:
-```bash
-cp .env.example .env
-```
-
-Edit `.env` file with your settings:
-```
-FLASK_APP=main.py
-FLASK_ENV=development
-SECRET_KEY=your-secret-key-here
-DATABASE_URL=sqlite:///Mailosophy.db
-GOOGLE_CLIENT_ID=your-google-client-id
-GOOGLE_CLIENT_SECRET=your-google-client-secret
-GOOGLE_REDIRECT_URI=http://localhost:5000/auth/google/callback
-OPENAI_API_KEY=your-openai-api-key-here
-```
-
-### Google OAuth Setup
-
-To enable Google authentication:
-
-1. Go to [Google Cloud Console](https://console.cloud.google.com/)
-2. Create a new project
-3. Enable the following APIs:
-   - Gmail API
-4. Create OAuth 2.0 credentials:
-   - Application type: Web application
-   - Authorized redirect URIs: `http://localhost:5000/auth/google/callback`
-5. Copy the Client ID and Client Secret to your `.env` file
-
-5. Initialize database:
-```bash
-python main.py
-```
+   ```bash
+   pip install -r requirements.txt
+   ```
+4. Copy the example environment file and update the values:
+   ```bash
+   cp .env.example .env
+   ```
+   Key variables:
+   ```
+   FLASK_APP=main.py
+   FLASK_ENV=development
+   SECRET_KEY=your-secret-key-here
+   DATABASE_URL=sqlite:///Mailosophy.db
+   GOOGLE_CLIENT_ID=...
+   GOOGLE_CLIENT_SECRET=...
+   GOOGLE_REDIRECT_URI=http://localhost:5000/auth/google/callback
+   OPENAI_API_KEY=...
+   ```
+5. Run the lightweight schema upgrade (creates/updates tables such as `users.last_synced_at`):
+   ```bash
+   python scripts/upgrade_schema.py
+   ```
 
 ## Running the Application
 
@@ -105,112 +94,96 @@ python main.py
 python main.py
 ```
 
-The application will be available at `http://localhost:5000`.
+Visit `http://localhost:5000` and sign in with Google to begin.
 
 ## Usage
 
-### Creating an Account
-1. Click "Register" on the login page
-2. Fill in your details
-3. Click "Register"
+### Signing In
+1. Click **Continue with Google** on the login screen.
+2. Approve the Gmail/Workspace scopes.
+3. You are redirected to the dashboard once OAuth succeeds.
 
 ### Syncing Emails
-1. Click the **Sync Emails** button in the dashboard
-2. If prompted, connect and authorize your Google account
-3. Gmail messages will stream in and become available for AI suggestions or manual labeling
-4. Enable auto sync in **Settings → Preferences & Automation** to trigger background syncs every _n_ minutes (when the dashboard is open)
+1. Press **Sync Emails** on the hero banner.
+2. Watch the real-time progress messages (connecting, fetching, cleaning, etc.).
+3. Enable auto sync in **Settings ? Preferences & Automation** to run silent refreshes every _n_ minutes.
+4. The hero status pill displays whether auto sync is enabled and when the last sync finished.
 
 ### Managing Labels
-1. View all labels in the left sidebar
-2. Click "+ New Label" to create custom labels
-3. Click on a label to view emails with that label
-4. On the email detail page, add/remove labels as needed
+1. Browse the Gmail label tree in the sidebar (Inbox lives outside the tree for clarity).
+2. Click **+ New Label** to create custom tags; they sync to Gmail immediately.
+3. Drag and drop one or many emails onto a label to move them and (optionally) remove Inbox.
+4. Use the email detail dropdown to add/remove labels with the same logic as the tree.
 
 ### AI Suggestions
-1. Open any email from the dashboard
-2. Click **Generate Suggestions** to have OpenAI analyze the message
-3. Suggested labels appear both on the detail page and as highlights on the dashboard
-4. Click **Keep Tagging** to apply the labels; if your account is linked to Gmail, they sync back automatically
+1. Open any message and click **Generate Suggestions**.
+2. AI chips appear both on the detail view and on the dashboard cards.
+3. Click a chip to apply that label; Gmail is updated instantly.
+4. Card summaries are AI-authored so you can triage without opening every email.
 
-### Finding Emails
-1. Use the search box to search by sender, subject, or content
-2. Click on labels to filter emails
-3. Use pagination to browse through emails
+### Finding & Acting on Mail
+- Use the search input for sender/subject/content queries.
+- Filter by label nodes or use the All/Inbox quick cards.
+- Adjust **Cards per row** (1/2/3) to match your screen width.
+- Multi-select emails to delete them in bulk (deletions sync to Gmail trash).
+
+### Settings & Admin
+- **Settings**: configure auto-sync cadence, Inbox retention for manual labels, drag-and-drop rules, and other user-specific toggles.
+- **Admin Console**: manage Gmail/OpenAI credentials, IMAP fallbacks, maintenance tasks, and per-user purge utilities.
 
 ## Project Structure
 
 ```
 Mailosophy/
-├── app/
-│   ├── __init__.py              # Flask app factory
-│   ├── routes.py                # API routes and views
-│   ├── models/
-│   │   ├── user.py              # User model
-│   │   └── email.py             # Email and Label models
-│   ├── utils/
-│   │   └── ai_labeler.py         # AI-based email classification
-│   ├── templates/
-│   │   ├── base.html            # Base template
-│   │   ├── login.html           # Login page
-│   │   ├── register.html        # Registration page
-│   │   ├── dashboard.html       # Main dashboard
-│   │   └── email_detail.html    # Email detail view
-│   └── static/
-│       ├── css/
-│       │   └── style.css        # Main stylesheet
-│       └── js/
-│           ├── main.js          # Main JavaScript
-│           └── dashboard.js     # Dashboard functionality
-├── config/                      # Configuration files
-├── main.py                      # Application entry point
-├── requirements.txt             # Python dependencies
-└── .env.example                 # Environment variables template
++-- app/
+�   +-- __init__.py            # Flask app factory
+�   +-- routes.py              # Blueprints (main, auth, email, label)
+�   +-- models/                # SQLAlchemy models (user, email, label, app_config)
+�   +-- utils/                 # Gmail helper, AI labeler, OpenAI helper, celery utils
+�   +-- templates/             # base.html, dashboard.html, email_detail.html, admin.html, etc.
+�   +-- static/                # css/style.css, js/dashboard.js, img/logo.svg, ai-label.svg, ...
++-- scripts/
+�   +-- upgrade_schema.py      # Lightweight migration helper
++-- docs/                      # Setup guides, OAuth walkthroughs, implementation summary
++-- backups/                   # Reference copies (pre-IMAP removal)
++-- main.py                    # Application entry point
++-- requirements.txt           # Python dependencies
++-- .env / .env.example        # Environment configuration
++-- README.md
 ```
 
 ## Features Coming Soon
+- Attachment viewer and Gmail thread context
+- Inline reply/forward powered by Gmail send scopes
+- Notification center for AI and sync events
+- Advanced filtering (date ranges, AI confidence, label combos)
+- Team workspaces with audit trails
 
-- 📎 Attachment support
-- 📧 Email reply/forward
-- 🔔 Notifications
-- 📊 Email analytics
-- 🔍 Advanced search filters
-- 🤖 Custom AI model training
-- 📱 Mobile app
+## API Endpoints (Highlights)
+- `GET /auth/login` � Google OAuth entry point
+- `GET /auth/logout` � Sign out
+- `GET /dashboard` � Main UI (server-rendered)
+- `POST /email/sync` � SSE endpoint to sync Gmail messages
+- `POST /email/<id>/labels` � Assign labels (also triggered via drag-and-drop/AJAX)
+- `DELETE /email/<id>/labels/<label_id>` � Remove labels
+- `POST /email/<id>/delete` � Trash an email in Gmail and the local DB
+- `POST /labels/create` � Create custom labels and sync to Gmail
 
-## API Endpoints
-
-### Authentication
-- `POST /auth/login` - User login
-- `POST /auth/register` - User registration
-- `GET /auth/logout` - User logout
-
-### Emails
-- `POST /email/sync` - Sync emails from Gmail
-- `GET /email/<id>` - View email details
-- `POST /email/<id>/label` - Add label to email
-- `DELETE /email/<id>/label/<label_id>` - Remove label from email
-
-### Labels
-- `POST /label/create` - Create new label
-- `GET /label/all` - Get all labels
-- `DELETE /label/<id>` - Delete label
+(Additional admin/settings endpoints exist but are primarily exercised through the UI.)
 
 ## Troubleshooting
 
-### "Email sync not working"
-- Check internet connection
-- Ensure your Google account is connected (Dashboard banner shows status)
-- Re-run Google OAuth if tokens expired
-- Check application logs
+**"Email sync not working"**
+- Ensure you are signed in with Google (banner shows connection status).
+- Re-run the Google OAuth flow if you see `401 Invalid Credentials` (token revoked).
+- Check server logs for Gmail quota errors or OpenAI failures.
+- Verify `.env` contains valid OpenAI + Google credentials and that `scripts/upgrade_schema.py` has been run.
 
 ## Contributing
-
-Contributions are welcome! Please feel free to submit pull requests.
+Pull requests and issue reports are welcome! Please open an issue first if you plan a large change.
 
 ## License
-
-This project is open source and available under the MIT License.
+MIT License.
 
 ## Support
-
-For issues, questions, or suggestions, please open an issue on GitHub.
+Need help or have ideas? Open an issue in this repository.
