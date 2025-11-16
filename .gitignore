@@ -127,3 +127,4 @@ Thumbs.db
 # Project specific
 instance/
 Mailosophy.db
+logs/

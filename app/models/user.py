@@ -70,6 +70,7 @@ class UserPreference(db.Model):
     ai_summaries_enabled = db.Column(db.Boolean, default=True)
     sync_label_mode = db.Column(db.String(32), default='inbox')
     sync_label_ids = db.Column(db.Text, default='[]')
+    auto_add_training_examples = db.Column(db.Boolean, default=False)
     email_delete_confirmation = db.Column(db.Boolean, default=True)
     created_at = db.Column(db.DateTime, default=db.func.now())
     updated_at = db.Column(db.DateTime, default=db.func.now(), onupdate=db.func.now())

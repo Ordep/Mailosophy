@@ -46,9 +46,18 @@ a {
     top: 0;
     z-index: 20;
     background: radial-gradient(circle at top, #eef2ff 5%, #f8fafc 45%, #ffffff 80%);
+    background-color: rgba(255, 255, 255, 0.95);
+    backdrop-filter: blur(16px);
+    isolation: isolate;
     box-shadow: 0 8px 30px rgba(15, 23, 42, 0.08);
     border-bottom: 1px solid #e2e8f0;
     padding-bottom: 12px;
+}
+
+.email-detail-page .app-header {
+    background: rgba(255, 255, 255, 0.97);
+    backdrop-filter: blur(18px);
+    border-bottom-color: #dfe4f1;
 }
 
 .app-header-shell {
@@ -1300,6 +1309,7 @@ a {
 .panel-actions form {
     margin: 0;
 }
+
 
 .link-btn {
     border: none;

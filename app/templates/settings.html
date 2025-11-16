@@ -143,6 +143,19 @@
                 </div>
                 <div class="form-group form-switch">
                     <div>
+                        <label for="auto_add_training_examples">Auto-add training examples</label>
+                        <small>Save every labeled email to the training set automatically.</small>
+                    </div>
+                    <label class="switch">
+                        <input type="checkbox"
+                               id="auto_add_training_examples"
+                               name="auto_add_training_examples"
+                               {% if user_prefs.auto_add_training_examples %}checked{% endif %}>
+                        <span class="switch-slider"></span>
+                    </label>
+                </div>
+                <div class="form-group form-switch">
+                    <div>
                         <label for="confirm_email_delete">Confirm email deletions</label>
                         <small>Toggle the confirmation prompt when you delete emails.</small>
                     </div>

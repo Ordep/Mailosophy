@@ -10,7 +10,7 @@ A modern web application that blends Gmail automation with AI-powered summaries 
 
 
 **Email Management**
-- Card-based dashboard with adjustable 1–3 column layouts, search, pagination, and quick All/Inboxes shortcuts
+- Card-based dashboard with adjustable 1-3 column layouts, search, pagination, and quick All/Inboxes shortcuts
 - Multi-select with bulk delete plus per-email delete (mirrors Gmail trash)
 - Email detail page redesigned to match the dashboard style with structured metadata and footer actions
 
@@ -125,7 +125,7 @@ Visit `http://localhost:5000` and sign in with Google to begin.
 1. Open any message and click **Generate Suggestions** on the detail page or on a card.
 2. AI chips appear both on the detail view and on the dashboard cards.
 3. Click a chip to apply that label; Gmail is updated instantly.
-4. Card summaries are AI-authored so you can triage without opening every email, with cached summaries reloaded on page load and refreshable via the “Generate Summary” button.
+4. Card summaries are AI-authored so you can triage without opening every email, with cached summaries reloaded on page load and refreshable via the Generate Summary button.
 
 ### Finding & Acting on Mail
 - Use the search input for sender/subject/content queries.
@@ -134,21 +134,21 @@ Visit `http://localhost:5000` and sign in with Google to begin.
 - Multi-select emails to delete them in bulk (deletions sync to Gmail trash).
 
 ### Settings & Admin
-- **Settings**: configure auto-sync cadence, Inbox retention for manual labels, drag-and-drop rules, delete confirmation toggles, and other user-specific options.
+- **Settings**: configure auto-sync cadence, Inbox retention for manual labels, drag-and-drop rules, the new auto-add training examples toggle, delete confirmation options, and other user-specific controls.
 
 ## Project Structure
 
 ```
 Mailosophy/
 +-- app/
-¦   +-- __init__.py            # Flask app factory
-¦   +-- routes.py              # Blueprints (main, auth, email, label)
-¦   +-- models/                # SQLAlchemy models (user, email, label, app_config)
-¦   +-- utils/                 # Gmail helper, AI labeler, OpenAI helper, celery utils
-¦   +-- templates/             # base.html, dashboard.html, email_detail.html, admin.html, etc.
-¦   +-- static/                # css/style.css, js/dashboard.js, img/logo.svg, ai-label.svg, ...
+   +-- __init__.py            # Flask app factory
+   +-- routes.py              # Blueprints (main, auth, email, label)
+   +-- models/                # SQLAlchemy models (user, email, label, app_config)
+   +-- utils/                 # Gmail helper, AI labeler, OpenAI helper, celery utils
+   +-- templates/             # base.html, dashboard.html, email_detail.html, admin.html, etc.
+   +-- static/                # css/style.css, js/dashboard.js, img/logo.svg, ai-label.svg, ...
 +-- scripts/
-¦   +-- upgrade_schema.py      # Lightweight migration helper
+   +-- upgrade_schema.py      # Lightweight migration helper
 +-- docs/                      # Setup guides, OAuth walkthroughs, implementation summary
 +-- backups/                   # Reference copies (pre-IMAP removal)
 +-- main.py                    # Application entry point
@@ -165,14 +165,14 @@ Mailosophy/
 - Team workspaces with audit trails
 
 ## API Endpoints (Highlights)
-- `GET /auth/login` – Google OAuth entry point
-- `GET /auth/logout` – Sign out
-- `GET /dashboard` – Main UI (server-rendered)
-- `POST /email/sync` – SSE endpoint to sync Gmail messages
-- `POST /email/<id>/labels` – Assign labels (also triggered via drag-and-drop/AJAX)
-- `DELETE /email/<id>/labels/<label_id>` – Remove labels
-- `POST /email/<id>/delete` – Trash an email in Gmail and the local DB
-- `POST /labels/create` – Create custom labels and sync to Gmail
+- `GET /auth/login`  Google OAuth entry point
+- `GET /auth/logout`  Sign out
+- `GET /dashboard`  Main UI (server-rendered)
+- `POST /email/sync`  SSE endpoint to sync Gmail messages
+- `POST /email/<id>/labels`  Assign labels (also triggered via drag-and-drop/AJAX)
+- `DELETE /email/<id>/labels/<label_id>`  Remove labels
+- `POST /email/<id>/delete`  Trash an email in Gmail and the local DB
+- `POST /labels/create`  Create custom labels and sync to Gmail
 
 (Additional admin/settings endpoints exist but are primarily exercised through the UI.)
 
@@ -195,11 +195,11 @@ Need help or have ideas? Open an issue in this repository.
 ## Screenshots
 Credit the updated UI with sanitized imagery captured locally under . The example below uses placeholder filenames and masked email addresses (e.g., ) to avoid leaking real data:
 
-1. **Landing + login view** – marketing hero, security callouts, and the Google-first CTA.
+1. **Landing + login view**  marketing hero, security callouts, and the Google-first CTA.
    ![Landing hero and login flow](docs/images/landing-login.png)
-2. **Dashboard + detail view** – dashboard yield with label tree, AI chips, and the new summary panel, with sensitive headers hidden.
+2. **Dashboard + detail view**  dashboard yield with label tree, AI chips, and the new summary panel, with sensitive headers hidden.
    ![Dashboard and detail view with AI summary](docs/images/dashboard-detail.png)
 
-3. **Email detail panel** – AI summary card, label picker, and header metadata with masked senders.
+3. **Email detail panel**  AI summary card, label picker, and header metadata with masked senders.
    ![Email detail with AI summary](docs/images/email-detail.png)
 ## Troubleshooting

@@ -376,6 +376,7 @@ class GmailSyncRunner:
         self.user = user
         self.logger = logger or logging.getLogger(__name__)
         self.source = source
+        self._gmail_client = None
 
     def stream(self):
         """Yield status dictionaries describing sync progress."""
@@ -464,6 +465,7 @@ class GmailSyncRunner:
             )
             yield {'error': 'Unable to connect to Gmail API. Please reconnect your Google account.'}
             return
+        self._gmail_client = client
 
         prefs = _get_user_preferences(self.user)
         label_filter = self._determine_label_filter(prefs)
@@ -490,6 +492,7 @@ class GmailSyncRunner:
                 self.logger.error("User %s Gmail token refresh failed: %s", self.user.id, exc)
                 yield {'error': f'Gmail API error: {exc}'}
                 return
+            self._gmail_client = client
             message_ids = self._list_message_ids(client, max_fetch, label_filter)
 
         if not message_ids and prefs and prefs.sync_label_mode == 'label':
@@ -510,7 +513,7 @@ class GmailSyncRunner:
         fetched = []
         for idx, msg_id in enumerate(message_ids, start=1):
             try:
-                fetched.append(client.fetch_message(msg_id))
+                fetched.append(self._fetch_message_with_refresh(msg_id))
             except GmailSyncError as exc:
                 self.logger.error(
                     "User %s Gmail fetch failed for message %s: %s",
@@ -564,18 +567,47 @@ class GmailSyncRunner:
         token = self.user.google_access_token
         if not token:
             return None
-        return GmailSyncClient(token)
+        client = GmailSyncClient(token)
+        self._gmail_client = client
+        return client
 
     def _refresh_gmail_client(self):
         if not self.user.google_refresh_token:
             return None
         new_token = google_oauth.refresh_access_token(self.user.google_refresh_token)
         if not new_token:
+            self.logger.warning("Refresh token invalid for user %s; disconnecting Google account", self.user.id)
+            self._invalidate_google_connection()
             return None
         self.logger.info("User %s Gmail token refreshed", self.user.id)
         self.user.google_access_token = new_token
         db.session.commit()
-        return GmailSyncClient(new_token)
+        client = GmailSyncClient(new_token)
+        self._gmail_client = client
+        return client
+
+    def _invalidate_google_connection(self):
+        self.user.google_access_token = None
+        self.user.google_refresh_token = None
+        self.user.is_google_connected = False
+        db.session.commit()
+
+    def _should_refresh_for_error(self, exc):
+        text = str(exc).lower()
+        return '401' in text or 'invalid credentials' in text or 'autherror' in text
+
+    def _fetch_message_with_refresh(self, message_id):
+        if not self._gmail_client:
+            raise GmailSyncError("Gmail client unavailable")
+        try:
+            return self._gmail_client.fetch_message(message_id)
+        except GmailSyncError as exc:
+            if not self._should_refresh_for_error(exc):
+                raise
+            refreshed = self._refresh_gmail_client()
+            if not refreshed:
+                raise
+            return self._gmail_client.fetch_message(message_id)
 
     def _persist_emails(self, all_emails):
         existing_message_ids = set(
@@ -1137,7 +1169,8 @@ def google_callback():
         
         # Update Google credentials
         user.google_access_token = credentials.token
-        user.google_refresh_token = credentials.refresh_token
+        if credentials.refresh_token:
+            user.google_refresh_token = credentials.refresh_token
         user.is_google_connected = True
         
         db.session.commit()

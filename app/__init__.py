@@ -1,6 +1,8 @@
 from flask import Flask
 from flask_sqlalchemy import SQLAlchemy
 from flask_login import LoginManager
+from sqlalchemy import inspect
+from sqlalchemy import text
 import logging
 from logging.handlers import RotatingFileHandler
 import os
@@ -31,6 +33,15 @@ def create_app():
     # Create tables
     with app.app_context():
         db.create_all()
+        from sqlalchemy import inspect
+        inspector = inspect(db.engine)
+        if 'user_preferences' in inspector.get_table_names():
+            existing = {col['name'] for col in inspector.get_columns('user_preferences')}
+            with db.engine.connect() as conn:
+                if 'auto_add_training_examples' not in existing:
+                    conn.execute(text('ALTER TABLE user_preferences ADD COLUMN auto_add_training_examples BOOLEAN DEFAULT 0'))
+                if 'email_delete_confirmation' not in existing:
+                    conn.execute(text('ALTER TABLE user_preferences ADD COLUMN email_delete_confirmation BOOLEAN DEFAULT 1'))
         from app.models.user import UserPreference
         UserPreference.ensure_email_delete_column(db.engine)
 
