@@ -1,8 +1,13 @@
 # Mailosophy - Email Organization Web Application
+![Mailosophy logo](app/static/img/logo.svg)
 
 A modern web application that blends Gmail automation with AI-powered summaries and label suggestions so teams can triage every inbox with confidence.
 
 ## Features
+### Product & Custom AI
+- Login page now highlights the Custom AI Model offering right alongside product/security cards so visitors see the feature before authenticating.
+- The login hero references the AI model as part of the product narrative and points to the documentation for generating summaries post-login.
+
 
 **Email Management**
 - Card-based dashboard with adjustable 1–3 column layouts, search, pagination, and quick All/Inboxes shortcuts
@@ -25,8 +30,9 @@ A modern web application that blends Gmail automation with AI-powered summaries 
 - Responsive CSS design system applied consistently across dashboard, email detail, admin, and settings
 
 **AI Workflows**
-- OpenAI-powered summaries replace raw body previews on every email card
-- AI label chips with Mailosophy-specific iconography appear on cards and the email detail page
+- OpenAI-powered summaries replace raw body previews and now render directly beneath the message details with the AI-label icon to highlight their provenance.
+- AI suggestions reuse that same icon so both cards and the detail view feel consistent, and clicking a chip applies exactly that label to Gmail.
+- Custom AI model training surfaces fine-tuned classifiers and is highlighted on the login hero as part of the product experience.
 - Clicking an AI chip applies the label immediately and syncs it to Gmail; Inbox retention obeys user preference
 
 **Automation & Sync**
@@ -116,10 +122,10 @@ Visit `http://localhost:5000` and sign in with Google to begin.
 4. Use the email detail dropdown to add/remove labels with the same logic as the tree.
 
 ### AI Suggestions
-1. Open any message and click **Generate Suggestions**.
+1. Open any message and click **Generate Suggestions** on the detail page or on a card.
 2. AI chips appear both on the detail view and on the dashboard cards.
 3. Click a chip to apply that label; Gmail is updated instantly.
-4. Card summaries are AI-authored so you can triage without opening every email.
+4. Card summaries are AI-authored so you can triage without opening every email, with cached summaries reloaded on page load and refreshable via the “Generate Summary” button.
 
 ### Finding & Acting on Mail
 - Use the search input for sender/subject/content queries.
@@ -128,8 +134,7 @@ Visit `http://localhost:5000` and sign in with Google to begin.
 - Multi-select emails to delete them in bulk (deletions sync to Gmail trash).
 
 ### Settings & Admin
-- **Settings**: configure auto-sync cadence, Inbox retention for manual labels, drag-and-drop rules, and other user-specific toggles.
-- **Admin Console**: manage Gmail/OpenAI credentials, IMAP fallbacks, maintenance tasks, and per-user purge utilities.
+- **Settings**: configure auto-sync cadence, Inbox retention for manual labels, drag-and-drop rules, delete confirmation toggles, and other user-specific options.
 
 ## Project Structure
 
@@ -187,3 +192,14 @@ MIT License.
 
 ## Support
 Need help or have ideas? Open an issue in this repository.
+## Screenshots
+Credit the updated UI with sanitized imagery captured locally under . The example below uses placeholder filenames and masked email addresses (e.g., ) to avoid leaking real data:
+
+1. **Landing + login view** – marketing hero, security callouts, and the Google-first CTA.
+   ![Landing hero and login flow](docs/images/landing-login.png)
+2. **Dashboard + detail view** – dashboard yield with label tree, AI chips, and the new summary panel, with sensitive headers hidden.
+   ![Dashboard and detail view with AI summary](docs/images/dashboard-detail.png)
+
+3. **Email detail panel** – AI summary card, label picker, and header metadata with masked senders.
+   ![Email detail with AI summary](docs/images/email-detail.png)
+## Troubleshooting

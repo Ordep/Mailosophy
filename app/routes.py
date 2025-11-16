@@ -1,21 +1,22 @@
-from flask import Blueprint, render_template, request, jsonify, redirect, url_for, session, Response, stream_with_context, abort
+from flask import Blueprint, render_template, request, jsonify, redirect, url_for, session, Response, stream_with_context, abort, current_app, flash
 from flask_login import login_user, logout_user, login_required, current_user
 from app import db, login_manager
-from app.models import User, Email, Label, email_labels
+from app.models import User, Email, Label, email_labels, CustomModel, TrainingExample, UserPreference
 from app.utils.ai_labeler import AILabeler
 from app.utils.google_oauth import GoogleOAuth, GmailHelper
 from app.utils.gmail_sync import GmailSyncClient, GmailSyncError
-from app.utils.openai_helper import suggest_labels_from_openai
-from app.utils.config_service import (
-    get_openai_configuration,
-    set_config_values,
-)
+from app.utils.openai_helper import suggest_labels_from_openai, ensure_openai_ready
 from app.utils.email_summary import get_ai_card_summary
-from datetime import datetime
+from datetime import datetime, timedelta
 import os
 import json
 import re
 import logging
+import threading
+import time
+
+import openai
+from sqlalchemy.exc import IntegrityError
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -43,6 +44,9 @@ GMAIL_SYSTEM_LABELS = {
 }
 GMAIL_SYNC_MAX_MESSAGES_ENV = os.getenv('GMAIL_SYNC_MAX_MESSAGES')
 DEFAULT_OPENAI_MODEL = os.getenv('OPENAI_MODEL', 'gpt-3.5-turbo')
+CUSTOM_MODEL_MIN_EXAMPLES = int(os.getenv('CUSTOM_MODEL_MIN_EXAMPLES', 20))
+MAX_TRAINING_BODY_CHARS = 4000
+CUSTOM_MODEL_ACTIVE_STATUSES = ('pending', 'running', 'queued')
 try:
     GMAIL_SYNC_MAX_MESSAGES = int(GMAIL_SYNC_MAX_MESSAGES_ENV) if GMAIL_SYNC_MAX_MESSAGES_ENV else None
     if GMAIL_SYNC_MAX_MESSAGES is not None and GMAIL_SYNC_MAX_MESSAGES <= 0:
@@ -60,6 +64,170 @@ def _mark_user_synced(user):
         logger.exception("Failed to update last sync timestamp for user %s", getattr(user, 'id', 'unknown'))
         db.session.rollback()
 
+
+def _get_user_preferences(user):
+    prefs = getattr(user, 'preferences', None)
+    if prefs:
+        return prefs
+    prefs = UserPreference.query.filter_by(user_id=user.id).first()
+    if prefs:
+        user.preferences = prefs
+        return prefs
+
+    prefs = UserPreference(user_id=user.id)
+    db.session.add(prefs)
+    try:
+        db.session.commit()
+        return prefs
+    except IntegrityError:
+        db.session.rollback()
+        prefs = UserPreference.query.filter_by(user_id=user.id).first()
+        if prefs:
+            user.preferences = prefs
+        return prefs
+
+
+def _get_openai_configuration():
+    return {
+        'api_key': os.getenv('OPENAI_API_KEY'),
+        'model': os.getenv('OPENAI_MODEL') or DEFAULT_OPENAI_MODEL
+    }
+
+
+def _gather_training_examples(user):
+    return TrainingExample.query.filter_by(user_id=user.id).order_by(TrainingExample.created_at.asc()).all()
+
+
+def _refresh_custom_model_statuses(user):
+    pending_statuses = ('pending', 'running', 'queued')
+    models = CustomModel.query.filter(
+        CustomModel.user_id == user.id,
+        CustomModel.status.in_(pending_statuses)
+    ).all()
+
+    if not models:
+        return
+
+    model_name = ensure_openai_ready(raise_error=False)
+    if not model_name:
+        return
+
+    for model in models:
+        if not model.openai_job_id:
+            continue
+        try:
+            job = openai.FineTuningJob.retrieve(model.openai_job_id)
+        except Exception as exc:
+            logger.warning("Unable to refresh fine-tune job %s: %s", model.openai_job_id, exc)
+            continue
+
+        updated = False
+        new_status = job.get('status')
+        if new_status and new_status != model.status:
+            model.status = new_status
+            updated = True
+
+        if new_status == 'succeeded':
+            model.openai_model_name = job.get('fine_tuned_model')
+            model.completed_at = datetime.utcnow()
+            updated = True
+        elif new_status == 'failed':
+            error_info = job.get('error') or {}
+            model.error_message = error_info.get('message')
+            updated = True
+
+        if updated:
+            db.session.commit()
+
+
+def _resolve_user_custom_model(user):
+    model = getattr(user, 'active_custom_model', None)
+    if model and model.status == 'succeeded' and model.openai_model_name:
+        return model.openai_model_name
+    return None
+
+
+def _export_training_dataset(user, examples):
+    label_set = set()
+    dataset_dir = os.path.join(current_app.instance_path, 'training_datasets')
+    os.makedirs(dataset_dir, exist_ok=True)
+    filename = f"user_{user.id}_{int(datetime.utcnow().timestamp())}.jsonl"
+    file_path = os.path.join(dataset_dir, filename)
+
+    with open(file_path, 'w', encoding='utf-8') as handle:
+        for example in examples:
+            labels = []
+            if example.labels_json:
+                try:
+                    labels = json.loads(example.labels_json)
+                except json.JSONDecodeError:
+                    labels = []
+            labels = [label.strip() for label in labels if label and label.strip()]
+            if not labels:
+                continue
+
+            label_set.update(labels)
+            body = (example.body or '').strip()
+            if len(body) > MAX_TRAINING_BODY_CHARS:
+                body = body[:MAX_TRAINING_BODY_CHARS]
+
+            record = {
+                "messages": [
+                    {
+                        "role": "system",
+                        "content": "You classify emails into the user's folders. "
+                                   "Return a JSON array of label names exactly as provided."
+                    },
+                    {
+                        "role": "user",
+                        "content": f"Subject: {example.subject or ''}\n\nBody:\n{body}"
+                    },
+                    {
+                        "role": "assistant",
+                        "content": json.dumps(labels)
+                    }
+                ]
+            }
+            handle.write(json.dumps(record) + "\n")
+
+    return file_path, sorted(label_set)
+
+
+def _start_custom_model_training(user, examples):
+    if not examples:
+        raise ValueError('No training examples available.')
+
+    ensure_openai_ready()
+    dataset_path, label_set = _export_training_dataset(user, examples)
+
+    try:
+        with open(dataset_path, 'rb') as dataset_handle:
+            upload = openai.File.create(file=dataset_handle, purpose='fine-tune')
+
+        job = openai.FineTuningJob.create(
+            training_file=upload.id,
+            model=DEFAULT_OPENAI_MODEL,
+            suffix=f"mailosophy-u{user.id}"
+        )
+
+        model_record = CustomModel(
+            user_id=user.id,
+            name=f"{user.username}'s model ({datetime.utcnow().strftime('%Y-%m-%d %H:%M')})",
+            base_model=DEFAULT_OPENAI_MODEL,
+            openai_file_id=upload.id,
+            openai_job_id=job.id,
+            status=job.get('status', 'running'),
+            training_example_count=len(examples),
+            label_set=json.dumps(label_set)
+        )
+        db.session.add(model_record)
+        db.session.commit()
+        return model_record
+    finally:
+        try:
+            os.remove(dataset_path)
+        except OSError:
+            pass
 def build_label_tree(labels):
     tree = {}
 
@@ -81,7 +249,8 @@ def build_label_tree(labels):
         return result
 
     for label in sorted(labels, key=lambda l: l.name.lower()):
-        if label.name.lower() in GMAIL_SYSTEM_LABELS:
+        label_lower = label.name.lower()
+        if label_lower in GMAIL_SYSTEM_LABELS and label_lower != INBOX_LABEL_NAME.lower():
             continue
         parts = [part.strip() for part in label.name.split('/') if part.strip()]
         if not parts:
@@ -122,9 +291,20 @@ def build_label_contexts(labels):
     return contexts
 
 
-def sanitize_ai_suggestions(labels):
-    """Remove disallowed/system labels from AI suggestions."""
+def _normalize_label_name(value):
+    if not value:
+        return ''
+    normalized = re.sub(r'[^a-z0-9]+', '', value.lower())
+    return normalized
+
+
+def sanitize_ai_suggestions(labels, exclude=None):
+    """Remove disallowed/system labels (and optionally already-applied labels) from AI suggestions."""
     disallowed = {INBOX_LABEL_NAME.lower()}
+    exclude_norms = {
+        norm for norm in (_normalize_label_name(item) for item in exclude or [])
+        if norm
+    }
     sanitized = []
     seen = set()
     for label in labels or []:
@@ -134,9 +314,10 @@ def sanitize_ai_suggestions(labels):
         if not normalized:
             continue
         lowered = normalized.lower()
-        if lowered in disallowed or lowered in seen:
+        norm = _normalize_label_name(normalized)
+        if lowered in disallowed or not norm or norm in seen or norm in exclude_norms:
             continue
-        seen.add(lowered)
+        seen.add(norm)
         sanitized.append(normalized)
     return sanitized
 
@@ -145,6 +326,13 @@ def ensure_inbox_label(user, commit=False):
     """Ensure the system Inbox label exists for the user."""
     label = Label.query.filter_by(user_id=user.id, name=INBOX_LABEL_NAME).first()
     if label:
+        if label.gmail_label_id != 'INBOX':
+            label.gmail_label_id = 'INBOX'
+            db.session.add(label)
+            if commit:
+                db.session.commit()
+            else:
+                db.session.flush()
         return label
 
     label = Label(
@@ -152,7 +340,8 @@ def ensure_inbox_label(user, commit=False):
         name=INBOX_LABEL_NAME,
         color=INBOX_LABEL_COLOR,
         is_predefined=True,
-        description='System Inbox label'
+        description='System Inbox label',
+        gmail_label_id='INBOX'
     )
     db.session.add(label)
     if commit:
@@ -160,6 +349,415 @@ def ensure_inbox_label(user, commit=False):
     else:
         db.session.flush()
     return label
+
+_SYNC_LOCK = threading.Lock()
+_ACTIVE_SYNC_USERS = set()
+_AUTO_SYNC_THREAD = None
+AUTO_SYNC_POLL_SECONDS = int(os.getenv('AUTO_SYNC_POLL_SECONDS', '60'))
+
+
+def _acquire_sync_slot(user_id: int) -> bool:
+    with _SYNC_LOCK:
+        if user_id in _ACTIVE_SYNC_USERS:
+            return False
+        _ACTIVE_SYNC_USERS.add(user_id)
+        return True
+
+
+def _release_sync_slot(user_id: int) -> None:
+    with _SYNC_LOCK:
+        _ACTIVE_SYNC_USERS.discard(user_id)
+
+
+class GmailSyncRunner:
+    """Encapsulate Gmail sync logic so it can be reused by routes and workers."""
+
+    def __init__(self, user, *, logger=None, source='gmail'):
+        self.user = user
+        self.logger = logger or logging.getLogger(__name__)
+        self.source = source
+
+    def stream(self):
+        """Yield status dictionaries describing sync progress."""
+        yield from self._sync_with_gmail()
+
+    def _determine_label_filter(self, prefs):
+        mode = (prefs.sync_label_mode or 'inbox') if prefs else 'inbox'
+        if mode == 'all':
+            return []
+        if mode == 'label':
+            ids = self._resolve_valid_label_ids(prefs)
+            if ids:
+                return ids
+        return ['INBOX']
+
+    def _describe_label_filter(self, label_filter, prefs):
+        if not label_filter:
+            return 'All mail'
+        if label_filter == ['INBOX']:
+            return 'Inbox'
+        if prefs and prefs.sync_label_mode == 'label':
+            return f"{len(label_filter)} label(s)"
+        return ', '.join(label_filter)
+
+    def _list_message_ids(self, client, max_total, label_filter):
+        if not label_filter or len(label_filter) <= 1:
+            return client.list_message_ids(max_total=max_total, label_ids=label_filter)
+
+        collected = []
+        seen = set()
+        for lid in label_filter:
+            remaining = max_total - len(collected) if max_total else None
+            if remaining == 0:
+                break
+            ids = client.list_message_ids(max_total=remaining, label_ids=[lid])
+            for message_id in ids:
+                if message_id in seen:
+                    continue
+                seen.add(message_id)
+                collected.append(message_id)
+                if max_total and len(collected) >= max_total:
+                    return collected[:max_total]
+        return collected
+
+    def _resolve_valid_label_ids(self, prefs):
+        if not prefs or prefs.sync_label_mode != 'label':
+            return []
+        valid_rows = Label.query.filter(
+            Label.user_id == self.user.id,
+            Label.gmail_label_id.isnot(None)
+        ).with_entities(Label.gmail_label_id).all()
+        valid_ids = {row[0] for row in valid_rows if row[0]}
+        requested = prefs.sync_label_ids_list
+        filtered = [lid for lid in requested if lid in valid_ids]
+        if filtered != requested:
+            prefs.set_sync_label_ids(filtered)
+            if not filtered:
+                prefs.sync_label_mode = 'inbox'
+            db.session.commit()
+        return filtered
+
+    def _sync_with_gmail(self):
+        label_sync_result = _sync_gmail_labels_for_user(self.user)
+        if label_sync_result.get('success'):
+            yield {
+                'status': 'labels',
+                'message': label_sync_result.get('message')
+            }
+        else:
+            self.logger.info(
+                "User %s Gmail label sync skipped or failed: %s",
+                self.user.id,
+                label_sync_result.get('message')
+            )
+            yield {
+                'status': 'labels',
+                'message': label_sync_result.get('message', 'Label sync skipped')
+            }
+
+        yield {'status': 'connecting', 'message': 'Connecting to Gmail API...'}
+        client = self._get_gmail_client()
+        if not client:
+            self.logger.warning(
+                "User %s Gmail client unavailable (likely missing/expired token)",
+                self.user.id
+            )
+            yield {'error': 'Unable to connect to Gmail API. Please reconnect your Google account.'}
+            return
+
+        prefs = _get_user_preferences(self.user)
+        label_filter = self._determine_label_filter(prefs)
+        filter_desc = self._describe_label_filter(label_filter, prefs)
+        self.logger.info("User %s syncing Gmail scope: %s", self.user.id, filter_desc)
+
+        existing_count = Email.query.filter_by(user_id=self.user.id).count()
+        max_fetch = GMAIL_SYNC_MAX_MESSAGES
+        if max_fetch is not None:
+            max_fetch = max(max_fetch, existing_count)
+
+        try:
+            message_ids = self._list_message_ids(client, max_fetch, label_filter)
+        except GmailSyncError as exc:
+            self.logger.warning(
+                "User %s Gmail list failed: %s - attempting token refresh",
+                self.user.id,
+                exc
+            )
+            self.logger.debug("Gmail Sync error payload: %s", exc)
+            self._handle_invalid_label_error(str(exc))
+            client = self._refresh_gmail_client()
+            if not client:
+                self.logger.error("User %s Gmail token refresh failed: %s", self.user.id, exc)
+                yield {'error': f'Gmail API error: {exc}'}
+                return
+            message_ids = self._list_message_ids(client, max_fetch, label_filter)
+
+        if not message_ids and prefs and prefs.sync_label_mode == 'label':
+            self.logger.warning(
+                "User %s selected Gmail labels %s returned no messages during sync",
+                self.user.id,
+                label_filter
+            )
+
+        total = len(message_ids)
+        yield {
+            'status': 'fetching',
+            'message': f'Fetching {total} Gmail messages...',
+            'total': total,
+            'progress': 0
+        }
+        self.logger.info("User %s Gmail sync will fetch %s messages", self.user.id, total)
+        fetched = []
+        for idx, msg_id in enumerate(message_ids, start=1):
+            try:
+                fetched.append(client.fetch_message(msg_id))
+            except GmailSyncError as exc:
+                self.logger.error(
+                    "User %s Gmail fetch failed for message %s: %s",
+                    self.user.id,
+                    msg_id,
+                    exc
+                )
+                yield {'error': f'Error fetching Gmail message: {exc}'}
+                return
+
+            if idx % 5 == 0 or idx == total:
+                yield {
+                    'status': 'fetching',
+                    'message': f'Fetching emails... ({idx}/{total})',
+                    'total': total,
+                    'progress': idx
+                }
+
+        yield from self._persist_emails(fetched)
+        self.logger.info("User %s fetched %s Gmail messages", self.user.id, len(fetched))
+
+    def _handle_invalid_label_error(self, error_text):
+        invalid_ids = self._parse_invalid_label_ids(error_text)
+        if not invalid_ids:
+            return
+        self.logger.info("Removing invalid Gmail label IDs %s for user %s", invalid_ids, self.user.id)
+        prefs = _get_user_preferences(self.user)
+        remaining = [lid for lid in prefs.sync_label_ids_list if lid not in invalid_ids]
+        if remaining == prefs.sync_label_ids_list:
+            return
+        prefs.set_sync_label_ids(remaining)
+        if not remaining:
+            prefs.sync_label_mode = 'inbox'
+        db.session.commit()
+        self.logger.warning(
+            "Removed invalid Gmail labels %s from user %s preferences",
+            invalid_ids,
+            self.user.id
+        )
+
+    def _parse_invalid_label_ids(self, error_text: str) -> list[str]:
+        try:
+            payload = json.loads(error_text)
+            message = payload.get('error', {}).get('message', '')
+        except Exception:
+            message = error_text
+        matches = re.findall(r'Invalid label: ([A-Za-z0-9_-]+)', message)
+        return matches
+
+    def _get_gmail_client(self):
+        token = self.user.google_access_token
+        if not token:
+            return None
+        return GmailSyncClient(token)
+
+    def _refresh_gmail_client(self):
+        if not self.user.google_refresh_token:
+            return None
+        new_token = google_oauth.refresh_access_token(self.user.google_refresh_token)
+        if not new_token:
+            return None
+        self.logger.info("User %s Gmail token refreshed", self.user.id)
+        self.user.google_access_token = new_token
+        db.session.commit()
+        return GmailSyncClient(new_token)
+
+    def _persist_emails(self, all_emails):
+        existing_message_ids = set(
+            e.message_id
+            for e in Email.query.filter_by(user_id=self.user.id).with_entities(Email.message_id).all()
+        )
+        server_message_ids = set(e['message_id'] for e in all_emails)
+
+        yield {
+            'status': 'processing',
+            'message': f'Processing {len(all_emails)} emails...',
+            'total': len(all_emails)
+        }
+        self.logger.info(
+            "User %s processing %s emails (%s existing)",
+            self.user.id,
+            len(all_emails),
+            len(existing_message_ids)
+        )
+
+        synced_count = 0
+        new_emails_to_insert = [e for e in all_emails if e['message_id'] not in existing_message_ids]
+        new_email_payloads = []
+        inbox_label = ensure_inbox_label(self.user)
+        label_map = {
+            lbl.gmail_label_id: lbl
+            for lbl in Label.query.filter(
+                Label.user_id == self.user.id,
+                Label.gmail_label_id.isnot(None)
+            ).all()
+        }
+
+        for idx, email_data in enumerate(new_emails_to_insert, 1):
+            email_obj = Email(
+                user_id=self.user.id,
+                message_id=email_data.get('message_id'),
+                sender=email_data['sender'],
+                subject=email_data['subject'],
+                body=email_data.get('body') or '',
+                html_body=email_data.get('html_body') or '',
+                received_date=email_data['received_date']
+            )
+            db.session.add(email_obj)
+            synced_count += 1
+            new_email_payloads.append({
+                'message_id': email_data.get('message_id'),
+                'subject': email_data.get('subject'),
+                'body': email_data.get('body'),
+                'html_body': email_data.get('html_body')
+            })
+
+            label_ids = email_data.get('label_ids') or []
+            assigned_labels = 0
+            has_inbox_label = False
+            for raw_gid in label_ids:
+                gid = str(raw_gid).strip()
+                if gid.upper() == 'INBOX':
+                    has_inbox_label = True
+                    continue
+                label_obj = label_map.get(gid)
+                if label_obj and label_obj not in email_obj.labels:
+                    email_obj.labels.append(label_obj)
+                    assigned_labels += 1
+
+            if (has_inbox_label or assigned_labels == 0) and inbox_label and inbox_label not in email_obj.labels:
+                email_obj.labels.append(inbox_label)
+
+            if synced_count % 50 == 0:
+                db.session.commit()
+
+            if idx % 25 == 0:
+                yield {
+                    'status': 'syncing',
+                    'progress': idx,
+                    'total': len(new_emails_to_insert),
+                    'synced': synced_count
+                }
+
+        deleted_count = 0
+        yield {'status': 'cleaning', 'message': 'Checking for deleted emails...'}
+        local_emails = Email.query.filter_by(user_id=self.user.id).all()
+        total_local = len(local_emails)
+        for idx, local_email in enumerate(local_emails, 1):
+            if local_email.message_id not in server_message_ids:
+                db.session.delete(local_email)
+                deleted_count += 1
+            if idx % 50 == 0 or idx == total_local:
+                yield {
+                    'status': 'cleaning',
+                    'message': f'Checking for deleted emails... ({idx}/{total_local})'
+                }
+
+        db.session.commit()
+
+        if new_email_payloads:
+            yield from self._auto_generate_ai_labels(new_email_payloads)
+
+        _mark_user_synced(self.user)
+
+        message = f'Completed! Synced {synced_count} new emails'
+        if deleted_count > 0:
+            message += f', deleted {deleted_count} emails'
+
+        yield {
+            'status': 'complete',
+            'synced': synced_count,
+            'deleted': deleted_count,
+            'message': message
+        }
+        self.logger.info(
+            "User %s sync completed via %s (synced=%s deleted=%s)",
+            self.user.id,
+            self.source,
+            synced_count,
+            deleted_count
+        )
+
+    def _auto_generate_ai_labels(self, new_email_payloads):
+        if not AUTO_AI_ENABLED or not new_email_payloads:
+            return
+        openai_config = _get_openai_configuration()
+        if not (os.getenv('OPENAI_API_KEY') or openai_config.get('api_key')):
+            self.logger.info(
+                "Skipping auto AI suggestions for user %s: OpenAI key not configured",
+                self.user.id
+            )
+            return
+
+        total = len(new_email_payloads)
+        self.logger.info("User %s auto-generating AI suggestions for %s emails", self.user.id, total)
+        yield {'status': 'ai', 'message': f'Generating AI suggestions for {total} new emails...'}
+
+        label_contexts = build_label_contexts(Label.query.filter_by(user_id=self.user.id).all())
+        model_override = _resolve_user_custom_model(self.user)
+        updated = 0
+
+        for idx, payload in enumerate(new_email_payloads, 1):
+            subject = payload.get('subject') or ''
+            combined_body = (payload.get('body') or '') + "\n" + (payload.get('html_body') or '')
+            email_obj = Email.query.filter_by(
+                user_id=self.user.id,
+                message_id=payload.get('message_id')
+            ).first()
+            if not email_obj:
+                continue
+
+            existing_labels = {
+                _normalize_label_name(label.name)
+                for label in email_obj.labels
+                if label.name
+            }
+            try:
+                suggestions = suggest_labels_from_openai(
+                    subject,
+                    combined_body,
+                    label_contexts or None,
+                    model_override=model_override
+                )
+                suggestions = sanitize_ai_suggestions(suggestions, exclude=existing_labels)
+            except Exception:
+                self.logger.exception(
+                    "Auto AI suggestion failed for user %s message %s",
+                    self.user.id,
+                    payload.get('message_id')
+                )
+                continue
+
+            if not suggestions:
+                continue
+
+            email_obj.ai_suggested_labels = json.dumps(suggestions)
+            email_obj.ai_suggestion_applied = False
+            updated += 1
+
+            if idx % 5 == 0 or idx == total:
+                yield {'status': 'ai', 'message': f'AI tagging progress {idx}/{total}'}
+
+        if updated:
+            db.session.commit()
+            yield {'status': 'ai', 'message': f'AI suggestions ready for {updated} emails'}
+        else:
+            yield {'status': 'ai', 'message': 'AI did not find suggestions for new emails'}
 
 # Create blueprints
 main_bp = Blueprint('main', __name__)
@@ -210,6 +808,8 @@ def dashboard():
     if selected_label:
         query = query.filter(Email.labels.any(Label.id == selected_label))
 
+    prefs = _get_user_preferences(current_user)
+    ai_summaries_enabled = prefs.ai_summaries_enabled if prefs else True
     emails = query.order_by(Email.received_date.desc()).paginate(page=page, per_page=25)
     
     for email_obj in emails.items:
@@ -225,11 +825,13 @@ def dashboard():
             except json.JSONDecodeError:
                 email_obj.ai_preview_labels = []
 
-        try:
-            summary = get_ai_card_summary(email_obj)
-        except Exception:
-            summary = None
-            logger.exception('Failed to build AI summary for email %s', email_obj.id)
+        summary = None
+        if ai_summaries_enabled:
+            try:
+                summary = get_ai_card_summary(email_obj)
+            except Exception:
+                summary = None
+                logger.exception('Failed to build AI summary for email %s', email_obj.id)
         email_obj.card_summary = summary
 
     tree_source = [
@@ -254,9 +856,9 @@ def dashboard():
 
     if auto_sync_minutes:
         unit = "minute" if auto_sync_minutes == 1 else "minutes"
-        auto_sync_text = f"Auto sync enabled · every {auto_sync_minutes} {unit}."
+        auto_sync_text = f"Auto sync enabled - every {auto_sync_minutes} {unit}."
     else:
-        auto_sync_text = "Auto sync disabled · enable it in Settings to keep Mailosophy fresh."
+        auto_sync_text = "Auto sync disabled - enable it in Settings to keep Mailosophy fresh."
     
     return render_template(
         'dashboard.html',
@@ -271,7 +873,10 @@ def dashboard():
         selected_label=selected_label,
         auto_sync_minutes=auto_sync_minutes,
         auto_sync_text=auto_sync_text,
-        last_refresh_display=last_refresh_display
+        last_refresh_display=last_refresh_display,
+        ai_summaries_enabled=ai_summaries_enabled
+        ,
+        prefs=prefs
     )
 
 @main_bp.route('/settings', methods=['GET', 'POST'])
@@ -279,6 +884,9 @@ def dashboard():
 def settings():
     success_message = None
     error_message = None
+    prefs = _get_user_preferences(current_user)
+    labels = Label.query.filter_by(user_id=current_user.id).all()
+    label_tree = build_label_tree(labels)
 
     if request.method == 'POST':
         try:
@@ -288,7 +896,10 @@ def settings():
             if form_name == 'preferences':
                 if 'auto_sync_minutes' in request.form:
                     raw_value = (request.form.get('auto_sync_minutes') or '').strip()
-                    minutes = int(raw_value) if raw_value else 0
+                    try:
+                        minutes = int(raw_value) if raw_value else 0
+                    except ValueError:
+                        raise ValueError('Auto sync interval must be a number between 0 and 720 minutes.')
                     minutes = max(0, min(720, minutes))
                     current_user.auto_sync_minutes = minutes
                     updated_fields.append('Auto sync interval')
@@ -297,70 +908,138 @@ def settings():
                     keep_flag = request.form.get('keep_inbox_on_manual') == 'on'
                     current_user.keep_inbox_on_manual = keep_flag
                     updated_fields.append('Inbox retention on manual label' if keep_flag else 'Auto-remove on manual label')
+
+                ai_toggle = request.form.get('ai_summaries_enabled') == 'on'
+                prefs.ai_summaries_enabled = ai_toggle
+                updated_fields.append('AI summaries enabled' if ai_toggle else 'AI summaries disabled')
+
+                confirm_delete = request.form.get('confirm_email_delete') == 'on'
+                if confirm_delete != prefs.email_delete_confirmation:
+                    prefs.email_delete_confirmation = confirm_delete
+                    updated_fields.append('Delete confirmation ' + ('enabled' if confirm_delete else 'disabled'))
+
+                sync_mode = request.form.get('sync_label_mode') or 'inbox'
+                sync_mode = sync_mode if sync_mode in ('inbox', 'all', 'label') else 'inbox'
+                if sync_mode == 'label':
+                    selected_label_ids = [
+                        lid.strip()
+                        for lid in request.form.getlist('sync_label_ids')
+                        if lid and lid.strip()
+                    ]
+                    if not selected_label_ids:
+                        raise ValueError('Select at least one label to sync.')
+                    valid_ids = {lbl.gmail_label_id for lbl in labels if lbl.gmail_label_id}
+                    invalid = [lid for lid in selected_label_ids if lid not in valid_ids]
+                    if invalid:
+                        raise ValueError('Some selected labels are no longer available.')
+                    prefs.sync_label_mode = 'label'
+                    prefs.set_sync_label_ids(selected_label_ids)
+                    updated_fields.append(f"Sync labels: {len(selected_label_ids)} selected")
+                elif sync_mode == 'all':
+                    prefs.sync_label_mode = 'all'
+                    prefs.set_sync_label_ids([])
+                    updated_fields.append('Sync scope: All mail')
+                else:
+                    prefs.sync_label_mode = 'inbox'
+                    prefs.set_sync_label_ids([])
+                    updated_fields.append('Sync scope: Inbox')
             else:
-                error_message = 'Unknown settings section.'
-                db.session.rollback()
-                return render_template('settings.html', success=success_message, error=error_message)
+                raise ValueError('Unknown settings section.')
 
             db.session.commit()
             if updated_fields:
                 success_message = 'Updated: ' + ', '.join(updated_fields)
             else:
                 success_message = 'Nothing to update.'
-        except ValueError:
+        except ValueError as exc:
             db.session.rollback()
-            error_message = 'Auto sync interval must be a number between 0 and 720 minutes.'
+            error_message = str(exc) if str(exc) else 'Invalid value provided.'
         except Exception as e:
             db.session.rollback()
             logger.exception('Failed to save settings for user %s', current_user.id)
             error_message = f'Error saving settings: {str(e)}'
 
-    return render_template('settings.html', success=success_message, error=error_message)
-
-
-@main_bp.route('/admin', methods=['GET', 'POST'])
-@login_required
-def admin_console():
-    if not current_user.is_admin:
-        abort(403)
-
-    success_message = None
-    error_message = None
-    openai_config = get_openai_configuration()
-
-    if request.method == 'POST':
-        try:
-            api_key = (request.form.get('openai_api_key') or '').strip()
-            model_name = (request.form.get('openai_model') or '').strip() or DEFAULT_OPENAI_MODEL
-            if not api_key:
-                if not openai_config.get('api_key'):
-                    raise ValueError('OpenAI API key is required.')
-                api_key = openai_config['api_key']
-            set_config_values({
-                'openai_api_key': api_key,
-                'openai_model': model_name,
-            })
-            success_message = 'OpenAI configuration saved.'
-        except ValueError as exc:
-            error_message = str(exc)
-        except Exception as exc:  # noqa: broad-except
-            logger.exception('Failed to save admin settings: %s', exc)
-            error_message = f'Unexpected error: {exc}'
-
-    # Refresh configuration after potential updates
-    openai_config = get_openai_configuration()
-
-    missing_requirements = []
-    if not openai_config['api_key']:
-        missing_requirements.append('OpenAI API key must be set for AI features.')
+    _refresh_custom_model_statuses(current_user)
+    training_example_count = TrainingExample.query.filter_by(user_id=current_user.id).count()
+    custom_models = CustomModel.query.filter_by(user_id=current_user.id).order_by(CustomModel.created_at.desc()).all()
+    dataset_ready = training_example_count >= CUSTOM_MODEL_MIN_EXAMPLES
 
     return render_template(
-        'admin.html',
+        'settings.html',
         success=success_message,
         error=error_message,
-        openai_config=openai_config,
-        missing_requirements=missing_requirements,
+        training_example_count=training_example_count,
+        dataset_ready=dataset_ready,
+        custom_models=custom_models,
+        active_model=current_user.active_custom_model,
+        min_training_examples=CUSTOM_MODEL_MIN_EXAMPLES,
+        user_prefs=prefs,
+        label_tree=label_tree,
+        labels_available=bool(labels),
+        applied_sync_ids=prefs.sync_label_ids_list,
     )
+
+
+@main_bp.route('/settings/custom-model', methods=['POST'])
+@login_required
+def custom_model_action():
+    action = request.form.get('action')
+    model_id = request.form.get('model_id')
+
+    if action == 'train':
+        examples = _gather_training_examples(current_user)
+        if len(examples) < CUSTOM_MODEL_MIN_EXAMPLES:
+            flash(f'Need at least {CUSTOM_MODEL_MIN_EXAMPLES} training examples before training a custom model.', 'error')
+            return redirect(url_for('main.settings'))
+
+        active_job = CustomModel.query.filter(
+            CustomModel.user_id == current_user.id,
+            CustomModel.status.in_(CUSTOM_MODEL_ACTIVE_STATUSES)
+        ).first()
+        if active_job:
+            flash('A training job is already running. Refresh its status instead of starting another.', 'error')
+            return redirect(url_for('main.settings'))
+
+        try:
+            model = _start_custom_model_training(current_user, examples)
+            flash(f'Started training job {model.openai_job_id}. This can take several minutes.', 'success')
+        except Exception as exc:
+            logger.exception('Failed to start custom training for user %s', current_user.id)
+            flash(f'Unable to start training: {exc}', 'error')
+
+    elif action == 'refresh':
+        _refresh_custom_model_statuses(current_user)
+        flash('Model statuses refreshed.', 'success')
+
+    elif action == 'activate':
+        try:
+            model_id_int = int(model_id)
+        except (TypeError, ValueError):
+            flash('Invalid model reference.', 'error')
+            return redirect(url_for('main.settings'))
+
+        model = CustomModel.query.filter_by(id=model_id_int, user_id=current_user.id).first()
+        if not model:
+            flash('Model not found.', 'error')
+            return redirect(url_for('main.settings'))
+
+        if model.status != 'succeeded' or not model.openai_model_name:
+            flash('This model is not ready yet. Please refresh its status.', 'error')
+        else:
+            current_user.active_custom_model = model
+            db.session.commit()
+            flash('Custom model activated. Future suggestions will use it.', 'success')
+
+    elif action == 'deactivate':
+        current_user.active_custom_model = None
+        db.session.commit()
+        flash('Custom model disabled. Using default OpenAI model.', 'success')
+
+    else:
+        flash('Unknown action.', 'error')
+
+    return redirect(url_for('main.settings'))
+
 
 # Auth Routes
 @auth_bp.route('/login')
@@ -506,203 +1185,112 @@ def sync_emails():
 
     def generate():
         import sys
+        import traceback
+
+        print("=== SYNC STARTED ===", file=sys.stderr, flush=True)
+        if not (current_user.is_google_connected and current_user.google_access_token):
+            logger.warning("User %s attempted sync without Google connection", current_user.id)
+            yield f"data: {json.dumps({'error': 'Connect your Google Workspace account to sync emails.'})}\n\n"
+            return
+
+        if not _acquire_sync_slot(current_user.id):
+            yield f"data: {json.dumps({'error': 'A sync is already running. Please wait for it to finish.'})}\n\n"
+            return
+
+        runner = GmailSyncRunner(current_user, logger=logger)
         try:
-            print("=== SYNC STARTED ===", file=sys.stderr, flush=True)
-            if not (current_user.is_google_connected and current_user.google_access_token):
-                logger.warning("User %s attempted sync without Google connection", current_user.id)
-                yield f"data: {json.dumps({'error': 'Connect your Google Workspace account to sync emails.'})}\n\n"
-                return
-            yield from _sync_with_gmail(sys)
+            for payload in runner.stream():
+                yield f"data: {json.dumps(payload)}\n\n"
+            print("=== SYNC COMPLETED via GMAIL ===", file=sys.stderr, flush=True)
         except Exception as e:
-            import traceback
             print("=== SYNC ERROR ===", file=sys.stderr, flush=True)
             print(traceback.format_exc(), file=sys.stderr, flush=True)
             logger.exception("Sync failed for user %s", current_user.id)
             yield f"data: {json.dumps({'error': f'Sync error: {str(e)}. Check server logs for details.'})}\n\n"
-
-    def _sync_with_gmail(sys):
-        logger.info("User %s syncing via Gmail API", current_user.id)
-        label_sync_result = _sync_gmail_labels_for_user(current_user)
-        if label_sync_result.get('success'):
-            yield f"data: {json.dumps({'status': 'labels', 'message': label_sync_result.get('message')})}\n\n"
-        else:
-            logger.info(
-                "User %s Gmail label sync skipped or failed: %s",
-                current_user.id,
-                label_sync_result.get('message')
-            )
-            yield f"data: {json.dumps({'status': 'labels', 'message': label_sync_result.get('message', 'Label sync skipped')})}\n\n"
-        yield f"data: {json.dumps({'status': 'connecting', 'message': 'Connecting to Gmail API...'})}\n\n"
-        client = _get_gmail_client()
-        if not client:
-            logger.warning("User %s Gmail client unavailable (likely missing/expired token)", current_user.id)
-            yield f"data: {json.dumps({'error': 'Unable to connect to Gmail API. Please reconnect your Google account.'})}\n\n"
-            return
-
-        existing_count = Email.query.filter_by(user_id=current_user.id).count()
-        max_fetch = GMAIL_SYNC_MAX_MESSAGES
-        if max_fetch is not None:
-            max_fetch = max(max_fetch, existing_count)
-
-        try:
-            message_ids = client.list_message_ids(max_total=max_fetch)
-        except GmailSyncError as exc:
-            logger.warning("User %s Gmail list failed: %s - attempting token refresh", current_user.id, exc)
-            client = _refresh_gmail_client()
-            if not client:
-                logger.error("User %s Gmail token refresh failed: %s", current_user.id, exc)
-                yield f"data: {json.dumps({'error': f'Gmail API error: {exc}'})}\n\n"
-                return
-            message_ids = client.list_message_ids(max_total=max_fetch)
-
-        total = len(message_ids)
-        yield f"data: {json.dumps({'status': 'fetching', 'message': f'Fetching {total} Gmail messages...', 'total': total, 'progress': 0})}\n\n"
-        logger.info("User %s Gmail sync will fetch %s messages", current_user.id, total)
-        fetched = []
-        for idx, msg_id in enumerate(message_ids, start=1):
-            try:
-                fetched.append(client.fetch_message(msg_id))
-            except GmailSyncError as exc:
-                logger.error("User %s Gmail fetch failed for message %s: %s", current_user.id, msg_id, exc)
-                yield f"data: {json.dumps({'error': f'Error fetching Gmail message: {exc}'})}\n\n"
-                return
-
-            if idx % 5 == 0 or idx == total:
-                yield f"data: {json.dumps({'status': 'fetching', 'message': f'Fetching emails... ({idx}/{total})', 'total': total, 'progress': idx})}\n\n"
-
-        yield from _persist_emails(fetched, 'gmail', sys)
-        logger.info("User %s fetched %s Gmail messages", current_user.id, len(fetched))
-
-    def _get_gmail_client():
-        token = current_user.google_access_token
-        if not token:
-            return None
-        return GmailSyncClient(token)
-
-    def _refresh_gmail_client():
-        if not current_user.google_refresh_token:
-            return None
-        new_token = google_oauth.refresh_access_token(current_user.google_refresh_token)
-        if not new_token:
-            return None
-        logger.info("User %s Gmail token refreshed", current_user.id)
-        current_user.google_access_token = new_token
-        db.session.commit()
-        return GmailSyncClient(new_token)
-
-    def _persist_emails(all_emails, source, sys):
-        existing_message_ids = set(
-            e.message_id for e in Email.query.filter_by(user_id=current_user.id).with_entities(Email.message_id).all()
-        )
-        server_message_ids = set(e['message_id'] for e in all_emails)
-
-        yield f"data: {json.dumps({'status': 'processing', 'message': f'Processing {len(all_emails)} emails...', 'total': len(all_emails)})}\n\n"
-        logger.info("User %s processing %s emails (%s existing)", current_user.id, len(all_emails), len(existing_message_ids))
-
-        synced_count = 0
-        new_emails_to_insert = [e for e in all_emails if e['message_id'] not in existing_message_ids]
-        new_email_payloads = []
-        inbox_label = ensure_inbox_label(current_user)
-
-        for idx, email_data in enumerate(new_emails_to_insert, 1):
-            email_obj = Email(
-                user_id=current_user.id,
-                message_id=email_data.get('message_id'),
-                sender=email_data['sender'],
-                subject=email_data['subject'],
-                body=email_data.get('body') or '',
-                html_body=email_data.get('html_body') or '',
-                received_date=email_data['received_date']
-            )
-            db.session.add(email_obj)
-            synced_count += 1
-            new_email_payloads.append({
-                'message_id': email_data.get('message_id'),
-                'subject': email_data.get('subject'),
-                'body': email_data.get('body'),
-                'html_body': email_data.get('html_body')
-            })
-
-            if inbox_label and inbox_label not in email_obj.labels:
-                email_obj.labels.append(inbox_label)
-
-            if synced_count % 50 == 0:
-                db.session.commit()
-
-            if idx % 25 == 0:
-                yield f"data: {json.dumps({'status': 'syncing', 'progress': idx, 'total': len(new_emails_to_insert), 'synced': synced_count})}\n\n"
-
-        deleted_count = 0
-        yield f"data: {json.dumps({'status': 'cleaning', 'message': 'Checking for deleted emails...'})}\n\n"
-        local_emails = Email.query.filter_by(user_id=current_user.id).all()
-        total_local = len(local_emails)
-        for idx, local_email in enumerate(local_emails, 1):
-            if local_email.message_id not in server_message_ids:
-                db.session.delete(local_email)
-                deleted_count += 1
-            if idx % 50 == 0 or idx == total_local:
-                yield f"data: {json.dumps({'status': 'cleaning', 'message': f'Checking for deleted emails... ({idx}/{total_local})'})}\n\n"
-
-        db.session.commit()
-
-        if new_email_payloads:
-            yield from _auto_generate_ai_labels(new_email_payloads, sys)
-
-        _mark_user_synced(current_user)
-
-        message = f'Completed! Synced {synced_count} new emails'
-        if deleted_count > 0:
-            message += f', deleted {deleted_count} emails'
-        yield f"data: {json.dumps({'status': 'complete', 'synced': synced_count, 'deleted': deleted_count, 'message': message})}\n\n"
-        logger.info("User %s sync completed via %s (synced=%s deleted=%s)", current_user.id, source, synced_count, deleted_count)
-        print(f"=== SYNC COMPLETED via {source.upper()} ===", file=sys.stderr, flush=True)
-
-    def _auto_generate_ai_labels(new_email_payloads, sys):
-        if not AUTO_AI_ENABLED or not new_email_payloads:
-            return
-        openai_config = get_openai_configuration()
-        if not (os.getenv('OPENAI_API_KEY') or openai_config.get('api_key')):
-            logger.info("Skipping auto AI suggestions for user %s: OpenAI key not configured", current_user.id)
-            return
-
-        total = len(new_email_payloads)
-        logger.info("User %s auto-generating AI suggestions for %s emails", current_user.id, total)
-        yield f"data: {json.dumps({'status': 'ai', 'message': f'Generating AI suggestions for {total} new emails...'})}\n\n"
-
-        label_contexts = build_label_contexts(Label.query.filter_by(user_id=current_user.id).all())
-        updated = 0
-
-        for idx, payload in enumerate(new_email_payloads, 1):
-            subject = payload.get('subject') or ''
-            combined_body = (payload.get('body') or '') + "\n" + (payload.get('html_body') or '')
-            try:
-                suggestions = suggest_labels_from_openai(subject, combined_body, label_contexts or None)
-                suggestions = sanitize_ai_suggestions(suggestions)
-            except Exception:
-                logger.exception("Auto AI suggestion failed for user %s message %s", current_user.id, payload.get('message_id'))
-                continue
-
-            if not suggestions:
-                continue
-
-            email_obj = Email.query.filter_by(user_id=current_user.id, message_id=payload.get('message_id')).first()
-            if not email_obj:
-                continue
-
-            email_obj.ai_suggested_labels = json.dumps(suggestions)
-            email_obj.ai_suggestion_applied = False
-            updated += 1
-
-            if idx % 5 == 0 or idx == total:
-                yield f"data: {json.dumps({'status': 'ai', 'message': f'AI tagging progress {idx}/{total}'})}\n\n"
-
-        if updated:
-            db.session.commit()
-            yield f"data: {json.dumps({'status': 'ai', 'message': f'AI suggestions ready for {updated} emails'})}\n\n"
-        else:
-            yield f"data: {json.dumps({'status': 'ai', 'message': 'AI did not find suggestions for new emails'})}\n\n"
+        finally:
+            _release_sync_slot(current_user.id)
 
     return Response(stream_with_context(generate()), mimetype='text/event-stream')
+
+def _run_due_auto_syncs():
+    now = datetime.utcnow()
+    candidates = User.query.filter(
+        User.auto_sync_minutes > 0,
+        User.is_google_connected.is_(True),
+        User.google_access_token.isnot(None)
+    ).all()
+
+    for user in candidates:
+        interval_minutes = user.auto_sync_minutes or 0
+        if interval_minutes <= 0:
+            continue
+
+        last_synced = user.last_synced_at
+        if last_synced and (now - last_synced) < timedelta(minutes=interval_minutes):
+            continue
+
+        if not _acquire_sync_slot(user.id):
+            continue
+
+        runner = GmailSyncRunner(user, logger=logger)
+        final_event = None
+        try:
+            for payload in runner.stream():
+                final_event = payload
+                if payload.get('error'):
+                    break
+
+            if final_event and final_event.get('status') == 'complete':
+                logger.info(
+                    "Auto sync finished for user %s (synced=%s deleted=%s)",
+                    user.id,
+                    final_event.get('synced'),
+                    final_event.get('deleted')
+                )
+            elif final_event and final_event.get('error'):
+                logger.warning(
+                    "Auto sync failed for user %s: %s",
+                    user.id,
+                    final_event.get('error')
+                )
+        except Exception:
+            logger.exception("Auto sync crashed for user %s", user.id)
+        finally:
+            _release_sync_slot(user.id)
+            time.sleep(1)
+
+
+def start_auto_sync_worker(app):
+    """Start the background worker that enforces per-user auto sync cadences."""
+    global _AUTO_SYNC_THREAD
+    if AUTO_SYNC_POLL_SECONDS <= 0:
+        logger.info("Auto sync worker disabled (AUTO_SYNC_POLL_SECONDS=%s)", AUTO_SYNC_POLL_SECONDS)
+        return
+    if getattr(app, '_auto_sync_worker_started', False):
+        return
+    if _AUTO_SYNC_THREAD and _AUTO_SYNC_THREAD.is_alive():
+        return
+
+    def _worker():
+        with app.app_context():
+            logger.info(
+                "Auto sync worker started (poll interval %s seconds)",
+                AUTO_SYNC_POLL_SECONDS
+            )
+            while True:
+                try:
+                    _run_due_auto_syncs()
+                except Exception:
+                    logger.exception("Auto sync worker iteration failed")
+                time.sleep(AUTO_SYNC_POLL_SECONDS)
+
+    _AUTO_SYNC_THREAD = threading.Thread(
+        target=_worker,
+        name='mailosophy-auto-sync',
+        daemon=True
+    )
+    _AUTO_SYNC_THREAD.start()
+    app._auto_sync_worker_started = True
 
 def _sync_gmail_labels_for_user(user):
     """Fetch Gmail labels and mirror them locally for the provided user."""
@@ -744,6 +1332,7 @@ def _sync_gmail_labels_for_user(user):
         for gmail_label in gmail_labels:
             label_name = gmail_label['name']
             label_type = gmail_label['type']
+            gmail_label_id = gmail_label.get('id')
 
             if label_type == 'system':
                 skipped_count += 1
@@ -762,12 +1351,19 @@ def _sync_gmail_labels_for_user(user):
                     name=label_name,
                     color=label_colors[color_index % len(label_colors)],
                     is_predefined=False,
-                    description='Synced from Gmail'
+                    description='Synced from Gmail',
+                    gmail_label_id=gmail_label_id
                 )
                 db.session.add(new_label)
                 synced_count += 1
                 color_index += 1
             else:
+                updated = False
+                if gmail_label_id and existing_label.gmail_label_id != gmail_label_id:
+                    existing_label.gmail_label_id = gmail_label_id
+                    updated = True
+                if updated:
+                    db.session.add(existing_label)
                 skipped_count += 1
 
         local_gmail_labels = Label.query.filter_by(
@@ -854,12 +1450,14 @@ def view_email(email_id):
     label_tree = build_label_tree(tree_source)
     applied_label_ids = {lbl.id for lbl in email_obj.labels}
 
+    ai_summary = get_ai_card_summary(email_obj)
     return render_template(
         'email_detail.html',
         email=email_obj,
         ai_suggestions=filtered_suggestions,
         label_tree=label_tree,
-        applied_label_ids=applied_label_ids
+        applied_label_ids=applied_label_ids,
+        ai_summary=ai_summary
     )
 
 @email_bp.route('/<int:email_id>/label', methods=['POST'])
@@ -910,7 +1508,11 @@ def purge_all_emails():
             row.id for row in Email.query.with_entities(Email.id).filter_by(user_id=current_user.id)
         ]
         if not email_ids:
-            return jsonify({'success': True, 'message': 'No emails to delete for this account.'})
+            message = 'No emails to delete for this account.'
+            if request.accept_mimetypes.accept_json and not request.accept_mimetypes.accept_html:
+                return jsonify({'success': True, 'message': message})
+            flash(message, 'info')
+            return redirect(url_for('main.settings'))
 
         assoc_result = db.session.execute(
             email_labels.delete().where(email_labels.c.email_id.in_(email_ids))
@@ -918,13 +1520,18 @@ def purge_all_emails():
         deleted_emails = Email.query.filter(Email.id.in_(email_ids)).delete(synchronize_session=False)
         db.session.commit()
 
-        return jsonify({
-            'success': True,
-            'message': f'Deleted {deleted_emails} emails and {assoc_result.rowcount} label links.'
-        })
+        message = f'Deleted {deleted_emails} emails and {assoc_result.rowcount} label links.'
+        if request.accept_mimetypes.accept_json and not request.accept_mimetypes.accept_html:
+            return jsonify({'success': True, 'message': message})
+        flash(message, 'success')
+        return redirect(url_for('main.settings'))
     except Exception as exc:
         db.session.rollback()
-        return jsonify({'success': False, 'message': f'Error purging emails: {exc}'}), 500
+        error_message = f'Error purging emails: {exc}'
+        if request.accept_mimetypes.accept_json and not request.accept_mimetypes.accept_html:
+            return jsonify({'success': False, 'message': error_message}), 500
+        flash(error_message, 'error')
+        return redirect(url_for('main.settings'))
 
 # Label Routes
 @label_bp.route('/create', methods=['POST'])
@@ -985,10 +1592,21 @@ def suggest_labels(email_id):
     content = (email_obj.body or '') + "\n" + (email_obj.html_body or '')
 
     label_contexts = build_label_contexts(Label.query.filter_by(user_id=current_user.id).all())
+    model_override = _resolve_user_custom_model(current_user)
     logger.info("User %s generating AI suggestions for email %s", current_user.id, email_id)
     try:
-        suggestions = suggest_labels_from_openai(email_obj.subject, content, label_contexts or None)
-        suggestions = sanitize_ai_suggestions(suggestions)
+        suggestions = suggest_labels_from_openai(
+            email_obj.subject,
+            content,
+            label_contexts or None,
+            model_override=model_override
+        )
+        existing_labels = {
+            _normalize_label_name(label.name)
+            for label in email_obj.labels
+            if label.name
+        }
+        suggestions = sanitize_ai_suggestions(suggestions, exclude=existing_labels)
     except Exception as exc:
         logger.exception("AI suggestion failed for user %s email %s", current_user.id, email_id)
         return jsonify({'success': False, 'message': str(exc)}), 500
@@ -1091,6 +1709,42 @@ def accept_ai_labels(email_id):
     })
 
 
+@email_bp.route('/<int:email_id>/training-example', methods=['POST'])
+@login_required
+def add_training_example(email_id):
+    """Persist the email as part of the user's training dataset."""
+    email_obj = Email.query.filter_by(id=email_id, user_id=current_user.id).first_or_404()
+    label_names = [lbl.name for lbl in email_obj.labels if lbl and lbl.name]
+    filtered_labels = [name for name in label_names if name.lower() != INBOX_LABEL_NAME.lower()]
+
+    if not filtered_labels:
+        flash('Add at least one label besides Inbox before saving to the training set.', 'error')
+        return redirect(url_for('email.view_email', email_id=email_id))
+
+    payload = {
+        'subject': email_obj.subject or '',
+        'body': email_obj.body or email_obj.html_body or '',
+        'labels_json': json.dumps(filtered_labels)
+    }
+
+    example = TrainingExample.query.filter_by(user_id=current_user.id, email_id=email_obj.id).first()
+    if example:
+        for key, value in payload.items():
+            setattr(example, key, value)
+    else:
+        example = TrainingExample(
+            user_id=current_user.id,
+            email_id=email_obj.id,
+            source='email_detail',
+            **payload
+        )
+        db.session.add(example)
+
+    db.session.commit()
+    flash('Email saved to your training dataset.', 'success')
+    return redirect(url_for('email.view_email', email_id=email_id))
+
+
 @email_bp.route('/<int:email_id>/ai-dismiss', methods=['POST'])
 @login_required
 def dismiss_ai_label(email_id):
@@ -1130,6 +1784,27 @@ def dismiss_ai_label(email_id):
     logger.info("User %s dismissed AI label '%s' on email %s", current_user.id, label_to_remove, email_id)
 
     return jsonify({'success': True, 'remaining': filtered})
+
+
+@email_bp.route('/<int:email_id>/ai-summary', methods=['POST'])
+@login_required
+def generate_ai_summary(email_id):
+    """Generate an AI summary for the email."""
+    email_obj = Email.query.filter_by(id=email_id, user_id=current_user.id).first_or_404()
+    openai_config = _get_openai_configuration()
+    if not (os.getenv('OPENAI_API_KEY') or openai_config.get('api_key')):
+        return jsonify({'success': False, 'message': 'OpenAI API key is not configured.'}), 400
+
+    try:
+        summary = get_ai_card_summary(email_obj)
+    except Exception:
+        logger.exception("Failed to generate AI summary for email %s", email_id)
+        return jsonify({'success': False, 'message': 'Failed to generate AI summary.'}), 500
+
+    if not summary:
+        return jsonify({'success': False, 'message': 'AI did not return a summary.'}), 400
+
+    return jsonify({'success': True, 'summary': summary})
 
 
 def _move_emails_to_label(email_ids, target_label_id, remove_inbox=False):

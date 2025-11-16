@@ -5,18 +5,16 @@ import re
 from typing import Optional
 import openai
 
-from app.utils.config_service import get_config_value
-
 
 DEFAULT_OPENAI_MODEL = os.getenv('OPENAI_MODEL', 'gpt-3.5-turbo')
 
 
 def _resolve_openai_api_key() -> Optional[str]:
-    return os.getenv('OPENAI_API_KEY') or get_config_value('openai_api_key')
+    return os.getenv('OPENAI_API_KEY')
 
 
 def _resolve_openai_model() -> str:
-    return get_config_value('openai_model') or DEFAULT_OPENAI_MODEL
+    return os.getenv('OPENAI_MODEL') or DEFAULT_OPENAI_MODEL
 
 
 def _ensure_openai_ready(raise_error: bool = True) -> Optional[str]:
@@ -56,9 +54,10 @@ def _normalize_label_contexts(label_contexts):
     return [ctx for ctx in contexts if ctx['name']]
 
 
-def suggest_labels_from_openai(subject: str, body: str, label_contexts=None):
+def suggest_labels_from_openai(subject: str, body: str, label_contexts=None, model_override: Optional[str] = None):
     """Use OpenAI to suggest semantic labels for an email."""
-    model_name = _ensure_openai_ready()
+    default_model = _ensure_openai_ready()
+    model_name = model_override or default_model
 
     contexts = _normalize_label_contexts(label_contexts)
 
@@ -150,3 +149,8 @@ def summarize_email_content(subject: str, body: str, max_chars: int = 200) -> Op
     if len(raw) > max_chars:
         raw = raw[:max_chars - 1].rstrip() + '...'
     return raw or None
+
+
+def ensure_openai_ready(raise_error: bool = True) -> Optional[str]:
+    """Expose the credential/model resolution helper for other modules."""
+    return _ensure_openai_ready(raise_error=raise_error)

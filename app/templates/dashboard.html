@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 
-{% block title %}Dashboard - Mailosophy{% endblock %}
+{% block title %}Mailosophy Workspace{% endblock %}
 
 {% block content %}
 <div class="dashboard-hero">
@@ -60,7 +60,8 @@
      id="dashboardPage"
      data-selected-label="{{ selected_label if selected_label else '' }}"
      data-force-all="{{ '1' if force_all else '0' }}"
-     data-inbox-label="{{ inbox_label.id if inbox_label else '' }}">
+     data-inbox-label="{{ inbox_label.id if inbox_label else '' }}"
+     data-auto-sync-minutes="{{ auto_sync_minutes or 0 }}">
     <aside class="sidebar">
         <div class="sidebar-header">
             <h2>Labels</h2>
@@ -284,12 +285,10 @@
 
 <script>
 window.Mailosophy_AUTO_SYNC_MINUTES = {{ auto_sync_minutes or 0 }};
+window.Mailosophy_REQUIRE_DELETE_CONFIRM = {{ 'true' if prefs.email_delete_confirmation else 'false' }};
 </script>
 <script src="{{ url_for("static", filename="js/dashboard.js") }}"></script>
 {% endblock %}
-
-
-
 
 
 

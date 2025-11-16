@@ -3,25 +3,82 @@
 {% block title %}Login - Mailosophy{% endblock %}
 
 {% block content %}
-<div class="auth-shell">
-    <div class="auth-panel">
-        <div class="auth-hero">
-            <p class="auth-kicker">Mailosophy Workspace</p>
-            <h1>Sign in with Google to organize every inbox confidently.</h1>
-            <p class="auth-subtitle">
-                We use Google Workspace to authenticate and synchronize labels securely. Manual usernames or passwords are no longer supported.
-            </p>
+<section class="signin-shell full-bleed">
+    <div class="signin-quad">
+        <div class="quad-cell banner-span">
+            <div class="logo-panel wide">
+                <span class="logo-emblem">
+                    <img src="{{ url_for('static', filename='img/logo.svg') }}" alt="Mailosophy logo">
+                </span>
+                <div class="logo-content">
+                    <h1>Calm Gmail control with AI guidance.</h1>
+                    <p class="logo-copy">
+                        Responsive cards, OpenAI summaries, and drag-and-drop labels keep every inbox aligned with Gmail in real time.
+                    </p>
+                </div>
+            </div>
         </div>
-        <div class="auth-card glass">
-            {% if error %}
-            <div class="auth-alert">{{ error }}</div>
-            {% endif %}
-            <a href="{{ url_for('auth.google_login') }}" class="google-btn">
-                <span class="google-g">G</span>
-                Continue with Google
-            </a>
-            <p class="auth-note">Your Google account must have Mailosophy access granted by an administrator.</p>
+        <div class="quad-cell feature-stack">
+                <div class="showcase-columns">
+                    <section class="column-card" aria-label="Product highlights">
+                        <p class="column-title">Product</p>
+                        <ul class="column-list">
+                            <li>Smart label management keeps Gmail taxonomy synced with Mailosophy rules.</li>
+                            <li>AI summaries surface context without opening every message.</li>
+                            <li>Drag-and-drop label management syncs instantly with Gmail.</li>
+                            <li>Custom AI model training lets you fine-tune personalized classifiers for your folders.</li>
+                            <li>Adjustable card layouts and search mirror Gmail navigation.</li>
+                        </ul>
+                    </section>
+                <section class="column-card" aria-label="Security highlights">
+                    <p class="column-title">Security</p>
+                    <ul class="column-list">
+                        <li>Google OAuth-only login keeps Workspace MFA in control.</li>
+                        <li>Scoped Gmail access touches labels/metadata, not message bodies.</li>
+                        <li>Immutable event logs trace sync, label, and automation activity.</li>
+                    </ul>
+                </section>
+            </div>
+        </div>
+        <div class="quad-cell login-card" aria-labelledby="signin-title">
+            <div class="signin-card tall highlight">
+                <div class="signin-card-header">
+                    <h2 id="signin-title">Login to Mailosophy</h2>
+                    <p class="signin-error" aria-live="polite" role="status">
+                        {% if error %}
+                            {{ error }}
+                        {% else %}
+                            &nbsp;
+                        {% endif %}
+                    </p>
+                </div>
+                <form class="signin-form" action="{{ url_for('auth.google_login') }}" method="get" novalidate>
+                    <button type="submit" class="signin-primary">
+                        <img src="{{ url_for('static', filename='img/google-icon.svg') }}"
+                             alt=""
+                             class="signin-google-icon"
+                             width="24"
+                             height="24"
+                             loading="lazy">
+                        <span>Continue with Google</span>
+                    </button>
+                    <p class="signin-note">
+                        Mailosophy never sees your credentials. We request limited Gmail scopes and mirror your existing access policies.
+                    </p>
+                </form>
+                <div class="signin-foot">
+                    <div class="avatar-group" aria-label="Recent sign-ins">
+                        <span class="avatar avatar-one">PR</span>
+                        <span class="avatar avatar-two">LS</span>
+                        <span class="avatar avatar-three">AM</span>
+                    </div>
+                    <div>
+                        <p class="foot-title">Private beta</p>
+                        <p class="foot-copy">Mailosophy staff accounts use this workspace daily while we gear up for customer launch.</p>
+                    </div>
+                </div>
+            </div>
         </div>
     </div>
-</div>
+</section>
 {% endblock %}

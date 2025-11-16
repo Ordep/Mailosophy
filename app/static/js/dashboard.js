@@ -6,6 +6,9 @@ const currentFilter = {
     forceAll: dashboardPage?.dataset.forceAll === '1',
     inboxLabel: dashboardPage?.dataset.inboxLabel || ''
 };
+const autoSyncMinutesFromDataset = Number(dashboardPage?.dataset.autoSyncMinutes || 0);
+window.MAILORG_AUTO_SYNC_MINUTES = autoSyncMinutesFromDataset;
+const confirmDeleteEnabled = window.Mailosophy_REQUIRE_DELETE_CONFIRM !== false;
 
 const quickCounts = {
     all: document.querySelector('[data-quick-count="all"]'),
@@ -24,7 +27,6 @@ let emailCards = Array.from(document.querySelectorAll('.email-card'));
 const searchInput = document.getElementById('searchInput');
 let searchRaf = null;
 let autoSyncTimer = null;
-let autoSyncIntervalHandle = null;
 
 function applySearchFilter(query = '') {
     const normalized = (query || '').toLowerCase();
@@ -226,6 +228,7 @@ function startEmailSync(options = {}) {
         }
         return;
     }
+    clearAutoSyncTimer();
 
     const silent = Boolean(options.silent);
     syncCompleted = false;
@@ -368,6 +371,7 @@ function closeSyncModal(options = {}) {
     if (syncBtn) {
         syncBtn.disabled = false;
     }
+    scheduleAutoSync();
 }
 
 function cancelSync() {
@@ -385,25 +389,34 @@ if (syncModal) {
     });
 }
 
-function scheduleAutoSync() {
-    const minutes = Number(window.Mailosophy_AUTO_SYNC_MINUTES || 0);
+function clearAutoSyncTimer() {
     if (autoSyncTimer) {
         clearTimeout(autoSyncTimer);
         autoSyncTimer = null;
     }
-    if (autoSyncIntervalHandle) {
-        clearInterval(autoSyncIntervalHandle);
-        autoSyncIntervalHandle = null;
-    }
+}
+
+function scheduleAutoSync(minutesOverride) {
+    const minutes = Number(
+        typeof minutesOverride === 'number'
+            ? minutesOverride
+            : window.MAILORG_AUTO_SYNC_MINUTES || 0
+    );
+    clearAutoSyncTimer();
     if (!minutes || minutes <= 0) {
         return;
     }
     const intervalMs = minutes * 60 * 1000;
     autoSyncTimer = setTimeout(() => startEmailSync({ silent: true }), intervalMs);
-    autoSyncIntervalHandle = setInterval(() => startEmailSync({ silent: true }), intervalMs);
 }
 
 scheduleAutoSync();
+window.addEventListener('focus', () => scheduleAutoSync());
+document.addEventListener('visibilitychange', () => {
+    if (!document.hidden) {
+        scheduleAutoSync();
+    }
+});
 
 const emailsGrid = document.getElementById('emailsGrid');
 const layoutButtons = document.querySelectorAll('.layout-option');
@@ -457,7 +470,7 @@ if (deleteEmailsBtn) {
             return;
         }
 
-        if (!confirm(`Delete ${emailIds.length} selected email${emailIds.length > 1 ? 's' : ''}? This cannot be undone.`)) {
+        if (confirmDeleteEnabled && !confirm(`Delete ${emailIds.length} selected email${emailIds.length > 1 ? 's' : ''}? This cannot be undone.`)) {
             return;
         }
 
@@ -519,7 +532,11 @@ document.querySelectorAll('.ai-chip-action').forEach(chip => {
 
         try {
             const response = await fetch(`/email/${emailId}/ai-accept`, {
-                method: 'POST'
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({ label: chip.dataset.label })
             });
             const data = await response.json();
             if (data.success) {
@@ -771,7 +788,7 @@ document.querySelectorAll('.email-delete-btn').forEach(button => {
         if (!emailId) {
             return;
         }
-        if (!confirm('Delete this email? This action cannot be undone.')) {
+        if (confirmDeleteEnabled && !confirm('Delete this email? This action cannot be undone.')) {
             return;
         }
         setIconButtonLoading(button, true);
@@ -784,6 +801,7 @@ document.querySelectorAll('.email-delete-btn').forEach(button => {
             const data = await response.json();
             if (data.success) {
                 button.closest('.email-card')?.remove();
+                notify(data.message || 'Email deleted.', 'success');
             } else {
                 notify(data.message || 'Failed to delete email.', 'error');
                 setIconButtonLoading(button, false);
@@ -823,4 +841,3 @@ async function deleteLabel(event, labelId, labelName) {
 }
 
 setupDragAndDrop();
-

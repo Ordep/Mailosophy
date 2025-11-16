@@ -1,5 +1,45 @@
 {% extends "base.html" %}
 
+{% macro render_sync_tree(nodes, applied_ids, level=0) %}
+<ul class="label-tree-list level-{{ level }}">
+    {% for node in nodes %}
+    {% set has_children = node.children and node.children|length %}
+    {% set label_obj = node.label %}
+    <li class="label-tree-node collapsed" data-level="{{ level }}">
+        <div class="label-tree-row">
+            {% if has_children %}
+            <button type="button" class="label-tree-toggle" aria-label="Toggle sublabels">+</button>
+            {% else %}
+            <span class="label-tree-toggle placeholder"></span>
+            {% endif %}
+            <span class="label-tree-branch"></span>
+            {% if label_obj %}
+            {% set gmail_id = label_obj.gmail_label_id %}
+            <label class="label-tree-link settings-sync-label">
+                <span class="label-color-dot" style="background-color: {{ label_obj.color }}"></span>
+                <input type="checkbox"
+                       name="sync_label_ids"
+                       value="{{ gmail_id }}"
+                       class="settings-sync-checkbox"
+                       {% if gmail_id and gmail_id in applied_ids %}checked{% endif %}
+                       {% if not gmail_id %}disabled title="Label not synced to Gmail"{% endif %}>
+                <span class="label-tree-text">{{ node.name }}</span>
+            </label>
+            {% else %}
+            <span class="label-tree-text">
+                <span class="label-color-dot muted"></span>
+                {{ node.name }}
+            </span>
+            {% endif %}
+        </div>
+        {% if has_children %}
+            {{ render_sync_tree(node.children, applied_ids, level + 1) }}
+        {% endif %}
+    </li>
+    {% endfor %}
+</ul>
+{% endmacro %}
+
 {% block content %}
 <div class="settings-container">
     <div class="settings-header">
@@ -7,10 +47,12 @@
             <h1>User Settings</h1>
             <p class="settings-hint">Tailor Mailosophy to your workflow. These preferences apply only to you.</p>
         </div>
-        <a href="{{ url_for('main.dashboard') }}" class="back-link-pill">
+        <button type="button"
+                class="hero-back-btn settings-back-btn"
+                onclick="window.location.href='{{ url_for('main.dashboard') }}'">
             <span class="back-link-icon">&larr;</span>
             Back to Dashboard
-        </a>
+        </button>
     </div>
 
     {% if error %}
@@ -86,9 +128,279 @@
                         <span class="switch-slider"></span>
                     </label>
                 </div>
+                <div class="form-group form-switch">
+                    <div>
+                        <label for="ai_summaries_enabled">AI card summaries</label>
+                        <small>Show OpenAI-generated previews on dashboard cards.</small>
+                    </div>
+                    <label class="switch">
+                        <input type="checkbox"
+                               id="ai_summaries_enabled"
+                               name="ai_summaries_enabled"
+                               {% if user_prefs.ai_summaries_enabled %}checked{% endif %}>
+                        <span class="switch-slider"></span>
+                    </label>
+                </div>
+                <div class="form-group form-switch">
+                    <div>
+                        <label for="confirm_email_delete">Confirm email deletions</label>
+                        <small>Toggle the confirmation prompt when you delete emails.</small>
+                    </div>
+                    <label class="switch">
+                        <input type="checkbox"
+                               id="confirm_email_delete"
+                               name="confirm_email_delete"
+                               {% if user_prefs.email_delete_confirmation %}checked{% endif %}>
+                        <span class="switch-slider"></span>
+                    </label>
+                </div>
+                <div class="form-group">
+                    <label>Sync scope</label>
+                    <div class="sync-mode-options" role="group" aria-label="Gmail sync scope">
+                        <label class="sync-mode-option {% if user_prefs.sync_label_mode == 'inbox' %}active{% endif %}">
+                            <input type="radio"
+                                   name="sync_label_mode"
+                                   value="inbox"
+                                   {% if user_prefs.sync_label_mode == 'inbox' %}checked{% endif %}>
+                            <div class="sync-mode-content">
+                                <strong>Inbox (default)</strong>
+                                <small>Keep auto-sync focused on new messages that arrive in your inbox.</small>
+                            </div>
+                        </label>
+                        <label class="sync-mode-option {% if user_prefs.sync_label_mode == 'all' %}active{% endif %}">
+                            <input type="radio"
+                                   name="sync_label_mode"
+                                   value="all"
+                                   {% if user_prefs.sync_label_mode == 'all' %}checked{% endif %}>
+                            <div class="sync-mode-content">
+                                <strong>All mail</strong>
+                                <small>Mirror your entire mailbox (might take longer but keeps everything synced).</small>
+                            </div>
+                        </label>
+                        <label class="sync-mode-option {% if user_prefs.sync_label_mode == 'label' %}active{% endif %}"
+                               {% if not labels_available and user_prefs.sync_label_mode != 'label' %}aria-disabled="true"{% endif %}>
+                            <input type="radio"
+                                   name="sync_label_mode"
+                                   value="label"
+                                   {% if user_prefs.sync_label_mode == 'label' %}checked{% endif %}
+                                   {% if not labels_available %}disabled{% endif %}>
+                            <div class="sync-mode-content">
+                                <strong>Specific labels</strong>
+                                <small>Only sync the folders you pick. Great for focused workflows.</small>
+                            </div>
+                        </label>
+                    </div>
+                    {% if labels_available %}
+                    <div class="label-picker settings-sync-picker">
+                        <button type="button"
+                                class="label-picker-btn"
+                                id="settingsLabelPickerBtn">
+                            <span>Manage synced Gmail labels</span>
+                            <span class="label-picker-caret">&#9662;</span>
+                        </button>
+                        <div class="label-picker-panel" id="settingsLabelPickerPanel">
+                            <div class="settings-sync-tree" id="syncTreeContainer">
+                                {{ render_sync_tree(label_tree, applied_sync_ids) }}
+                            </div>
+                        </div>
+                    </div>
+                    {% else %}
+                    <div class="settings-sync-empty">
+                        <p class="settings-hint warning">
+                            Gmail labels are not available because we can’t fetch them from your Google account yet.
+                            Please confirm that the Gmail API is enabled for your Google Cloud project and then click <strong>Sync Gmail labels</strong> above so the tree can populate.
+                        </p>
+                        <p class="settings-hint">
+                            <a href="https://console.developers.google.com/apis/api/gmail.googleapis.com/overview?project=561644158524"
+                               target="_blank"
+                               rel="noreferrer">
+                                Open the Gmail API console
+                            </a>
+                            to verify the API is enabled for project <code>561644158524</code>.
+                        </p>
+                    </div>
+                    {% endif %}
+                    <small>Select the Gmail labels that should be included during manual and automated syncs.</small>
+                </div>
                 <button type="submit" class="btn btn-primary">Save Preferences</button>
             </form>
         </div>
+
+        <div class="settings-card settings-card-wide">
+            <h2>Custom AI Model</h2>
+            <p class="settings-hint">
+                Curate training examples from real emails and let Mailosophy fine-tune a private classifier just for you.
+            </p>
+            <div class="training-stats">
+                <div>
+                    <span class="stat-label">Training examples</span>
+                    <span class="stat-value">{{ training_example_count }}</span>
+                    <small>Need {{ min_training_examples }}+ labeled emails</small>
+                </div>
+                <div>
+                    <span class="stat-label">Active model</span>
+                    {% if active_model %}
+                    <span class="stat-value positive">Custom ({{ active_model.training_example_count }} samples)</span>
+                    <small>{{ active_model.openai_model_name or 'Ready' }}</small>
+                    {% else %}
+                    <span class="stat-value">Default OpenAI</span>
+                    <small>No custom model activated</small>
+                    {% endif %}
+                </div>
+            </div>
+            <div class="training-actions">
+                <form method="POST" action="{{ url_for('main.custom_model_action') }}">
+                    <input type="hidden" name="action" value="train">
+                    <button type="submit"
+                            class="btn btn-primary"
+                            {% if not dataset_ready %}disabled{% endif %}>
+                        Train Custom Model
+                    </button>
+                </form>
+                <form method="POST" action="{{ url_for('main.custom_model_action') }}">
+                    <input type="hidden" name="action" value="refresh">
+                    <button type="submit" class="btn btn-secondary">Refresh Status</button>
+                </form>
+                {% if active_model %}
+                <form method="POST" action="{{ url_for('main.custom_model_action') }}">
+                    <input type="hidden" name="action" value="deactivate">
+                    <button type="submit" class="btn btn-danger btn-outline">Disable Custom Model</button>
+                </form>
+                {% endif %}
+            </div>
+            {% if not dataset_ready %}
+            <p class="settings-hint warning">
+                Add {{ min_training_examples - training_example_count }} more labeled emails to enable training.
+            </p>
+            {% endif %}
+
+            <div class="custom-model-list">
+                {% if custom_models %}
+                    {% for model in custom_models %}
+                    <div class="custom-model-row">
+                        <div>
+                            <p class="model-title">{{ model.name or 'Custom run' }}</p>
+                            <p class="model-meta">
+                                Status: <strong>{{ model.status|capitalize }}</strong> &middot;
+                                {{ model.training_example_count }} examples
+                            </p>
+                            {% if model.error_message %}
+                            <p class="model-error">{{ model.error_message }}</p>
+                            {% endif %}
+                        </div>
+                        <div class="model-actions">
+                            {% if model.status in ['pending', 'running', 'queued'] %}
+                            <span class="status-pill subtle">In progress</span>
+                            {% elif model.status == 'succeeded' %}
+                                {% if active_model and active_model.id == model.id %}
+                                <span class="status-pill success">Active</span>
+                                {% else %}
+                                <form method="POST" action="{{ url_for('main.custom_model_action') }}">
+                                    <input type="hidden" name="action" value="activate">
+                                    <input type="hidden" name="model_id" value="{{ model.id }}">
+                                    <button type="submit" class="btn btn-secondary btn-small">
+                                        Activate
+                                    </button>
+                                </form>
+                                {% endif %}
+                            {% elif model.status == 'failed' %}
+                            <span class="status-pill danger">Failed</span>
+                            {% endif %}
+                        </div>
+                    </div>
+                    {% endfor %}
+                {% else %}
+                <p class="settings-hint">No custom training jobs yet. Save labeled emails and train to get started.</p>
+                {% endif %}
+            </div>
+        </div>
     </div>
 </div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+ (function() {
+    const modeInputs = Array.from(document.querySelectorAll('input[name="sync_label_mode"]'));
+    const modeOptions = Array.from(document.querySelectorAll('.sync-mode-option'));
+    const treeContainer = document.getElementById('syncTreeContainer');
+    const pickerBtn = document.getElementById('settingsLabelPickerBtn');
+    const pickerPanel = document.getElementById('settingsLabelPickerPanel');
+    const labelPickerWrapper = document.querySelector('.label-picker');
+    if (!modeInputs.length || !treeContainer) {
+        return;
+    }
+    const treeInputs = Array.from(treeContainer.querySelectorAll('.settings-sync-checkbox'));
+
+    const getSelectedMode = () => {
+        const selected = document.querySelector('input[name="sync_label_mode"]:checked');
+        return selected ? selected.value : 'inbox';
+    };
+
+    const refreshActiveStates = () => {
+        const selectedMode = getSelectedMode();
+        modeOptions.forEach(option => {
+            const input = option.querySelector('input[name="sync_label_mode"]');
+            option.classList.toggle('active', input && input.value === selectedMode);
+        });
+    };
+
+    const refreshTree = () => {
+        const enabled = getSelectedMode() === 'label' && treeInputs.length;
+        treeContainer.style.display = enabled ? '' : 'none';
+        if (labelPickerWrapper) {
+            labelPickerWrapper.style.display = enabled ? '' : 'none';
+        }
+        treeInputs.forEach(input => {
+            input.disabled = !enabled;
+            input.closest('.label-tree-node')?.classList.toggle('is-disabled', !enabled);
+        });
+        if (!enabled && pickerPanel) {
+            pickerPanel.classList.remove('open');
+        }
+    };
+
+    const attachToggleHandlers = () => {
+        treeContainer.querySelectorAll('.label-tree-toggle:not(.placeholder)').forEach(toggle => {
+            toggle.addEventListener('click', (event) => {
+                event.preventDefault();
+                const node = toggle.closest('.label-tree-node');
+                if (!node) return;
+                node.classList.toggle('collapsed');
+            });
+        });
+    };
+
+    const expandCheckedBranches = () => {
+        treeInputs.filter(input => input.checked).forEach(input => {
+            let node = input.closest('.label-tree-node');
+            while (node) {
+                node.classList.remove('collapsed');
+                node = node.parentElement.closest('.label-tree-node');
+            }
+        });
+    };
+
+    modeInputs.forEach(input => input.addEventListener('change', () => {
+        refreshTree();
+        refreshActiveStates();
+    }));
+    refreshTree();
+    refreshActiveStates();
+    attachToggleHandlers();
+    expandCheckedBranches();
+    if (pickerBtn && pickerPanel) {
+        pickerBtn.addEventListener('click', (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            pickerPanel.classList.toggle('open');
+        });
+        document.addEventListener('click', (event) => {
+            if (!pickerPanel.contains(event.target) && !pickerBtn.contains(event.target)) {
+                pickerPanel.classList.remove('open');
+            }
+        });
+    }
+})();
+</script>
 {% endblock %}

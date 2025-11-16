@@ -31,6 +31,7 @@ class Label(db.Model):
     user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False, index=True)
     name = db.Column(db.String(80), nullable=False)
     color = db.Column(db.String(7), default='#0084FF')
+    gmail_label_id = db.Column(db.String(128), nullable=True, index=True)
     is_predefined = db.Column(db.Boolean, default=False)
     description = db.Column(db.String(255))
     created_at = db.Column(db.DateTime, default=db.func.now())

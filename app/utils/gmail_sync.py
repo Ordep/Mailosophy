@@ -25,7 +25,8 @@ class GmailSyncClient:
             page_size = 500
         collected = []
         page_token = None
-        label_ids = label_ids or ['INBOX']
+        if label_ids is None:
+            label_ids = ['INBOX']
 
         while True:
             params = {
@@ -74,6 +75,7 @@ class GmailSyncClient:
                 pass
 
         body_text, body_html = self._extract_bodies(payload.get('payload', {}))
+        label_ids = payload.get('labelIds') or []
         if not body_html and body_text:
             body_html = '<br>'.join(body_text.splitlines())
 
@@ -84,6 +86,7 @@ class GmailSyncClient:
             'html_body': body_html,
             'received_date': received_date,
             'message_id': message_id,
+            'label_ids': label_ids,
         }
 
     def _extract_bodies(self, part):

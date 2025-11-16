@@ -5,7 +5,10 @@ Handles Google authentication and token management
 import os
 import re
 import requests
+import jwt
 from urllib.parse import urlencode, parse_qs, urlparse
+
+ENABLE_GMAIL_MODIFY_SCOPE = os.getenv('ENABLE_GMAIL_MODIFY_SCOPE', '0').lower() not in ('0', 'false', 'off')
 
 class GoogleOAuth:
     def __init__(self):
@@ -14,14 +17,14 @@ class GoogleOAuth:
         self.redirect_uri = os.getenv('GOOGLE_REDIRECT_URI', 'http://localhost:5000/auth/google/callback')
         self.auth_uri = 'https://accounts.google.com/o/oauth2/v2/auth'
         self.token_uri = 'https://oauth2.googleapis.com/token'
-        self.userinfo_uri = 'https://www.googleapis.com/oauth2/v2/userinfo'
-        self.scopes = [
+        scopes = [
             'openid',
             'email',
-            'profile',
             'https://www.googleapis.com/auth/gmail.readonly',
-            'https://www.googleapis.com/auth/gmail.modify',
         ]
+        if os.getenv('ENABLE_LABEL_WRITE_SCOPE', '1').lower() not in ('0', 'false', 'off'):
+            scopes.append('https://www.googleapis.com/auth/gmail.modify')
+        self.scopes = scopes
     
     def get_authorization_url(self):
         """Get authorization URL for user to sign in"""
@@ -76,27 +79,23 @@ class GoogleOAuth:
             return None
     
     def get_user_info(self, credentials):
-        """Get user info from Google"""
-        try:
-            headers = {'Authorization': f'Bearer {credentials.token}'}
-            response = requests.get(self.userinfo_uri, headers=headers)
-            
-            print(f"Userinfo response status: {response.status_code}")
-            print(f"Userinfo response: {response.text}")
-            
-            if response.status_code == 200:
-                user_info = response.json()
-                return {
-                    'id': user_info.get('id'),
-                    'email': user_info.get('email'),
-                    'name': user_info.get('name'),
-                    'picture': user_info.get('picture')
-                }
+        """Parse the ID token to extract user info without requesting additional profile scopes."""
+        if not credentials or not credentials.id_token:
             return None
-        except Exception as e:
-            print(f"Error getting user info: {e}")
-            import traceback
-            print(traceback.format_exc())
+        try:
+            payload = jwt.decode(credentials.id_token, options={"verify_signature": False, "verify_aud": False})
+            email = payload.get('email')
+            sub = payload.get('sub')
+            name = payload.get('name') or (email.split('@')[0] if email else None)
+            picture = payload.get('picture')
+            return {
+                'id': sub,
+                'email': email,
+                'name': name,
+                'picture': picture
+            }
+        except Exception as exc:
+            print(f"Error decoding ID token: {exc}")
             return None
     
     def refresh_access_token(self, refresh_token):

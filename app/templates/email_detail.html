@@ -99,7 +99,7 @@
         </ul>
         {% endmacro %}
 
-        <section class="email-panel email-label-panel">
+    <section class="email-panel email-label-panel">
             <div class="panel-header">
                 <h2>Labels</h2>
                 <div class="panel-actions">
@@ -135,6 +135,27 @@
             </div>
         </section>
     </div>
+
+    <section class="email-panel email-summary-panel">
+        <div class="panel-header">
+            <h2>
+                <span class="ai-chip-icon summary-icon" aria-hidden="true"></span>
+                AI Summary
+            </h2>
+            <div class="panel-actions">
+                <button type="button" class="btn-pill secondary" id="generateSummaryBtn">
+                    Generate Summary
+                </button>
+            </div>
+        </div>
+        <div class="email-ai-summary" id="aiSummaryBody">
+            {% if ai_summary %}
+            <p>{{ ai_summary }}</p>
+            {% else %}
+            <p class="email-summary-placeholder">No summary yet. Click “Generate Summary” to create one.</p>
+            {% endif %}
+        </div>
+    </section>
 
     <section class="email-panel email-body-panel">
         <div class="panel-header">
@@ -455,10 +476,38 @@ if (deleteEmailBtn) {
     });
 }
 
+const summaryButton = document.getElementById('generateSummaryBtn');
+const summaryBody = document.getElementById('aiSummaryBody');
+
+async function refreshSummary() {
+    if (!summaryButton || !summaryBody) return;
+    summaryButton.disabled = true;
+    summaryButton.textContent = 'Generating...';
+    try {
+        const response = await fetch(`/email/${emailId}/ai-summary`, {
+            method: 'POST',
+            credentials: 'same-origin'
+        });
+        const data = await response.json();
+        if (data.success) {
+            summaryBody.innerHTML = `<p>${data.summary}</p>`;
+        } else {
+            alert(data.message || 'Failed to generate summary.');
+        }
+    } catch (err) {
+        console.error('Error generating summary:', err);
+        alert('An error occurred while generating the summary.');
+    } finally {
+        summaryButton.disabled = false;
+        summaryButton.textContent = 'Generate Summary';
+    }
+}
+
+if (summaryButton) {
+    summaryButton.addEventListener('click', refreshSummary);
+}
+
 renderSuggestionChips(currentSuggestions);
 applyFontSize();
 </script>
 {% endblock %}
-
-
-

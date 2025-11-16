@@ -33,9 +33,6 @@
             </div>
             <div class="header-actions">
                 <a href="{{ url_for('main.settings') }}" class="header-btn ghost">Settings</a>
-                {% if current_user.is_admin %}
-                <a href="{{ url_for('main.admin_console') }}" class="header-btn ghost">Admin Console</a>
-                {% endif %}
                 <a href="{{ url_for('auth.logout') }}" class="header-btn solid">Logout</a>
             </div>
         </div>
