@@ -2,13 +2,17 @@
 Google OAuth utility for Mailosophy
 Handles Google authentication and token management
 """
+import logging
 import os
 import re
 import requests
-import jwt
-from urllib.parse import urlencode, parse_qs, urlparse
+from google.auth.transport.requests import Request
+from google.oauth2 import id_token
+from urllib.parse import urlencode
 
 ENABLE_GMAIL_MODIFY_SCOPE = os.getenv('ENABLE_GMAIL_MODIFY_SCOPE', '0').lower() not in ('0', 'false', 'off')
+
+logger = logging.getLogger(__name__)
 
 class GoogleOAuth:
     def __init__(self):
@@ -18,12 +22,9 @@ class GoogleOAuth:
         self.auth_uri = 'https://accounts.google.com/o/oauth2/v2/auth'
         self.token_uri = 'https://oauth2.googleapis.com/token'
         scopes = [
-            'openid',
-            'email',
-            'https://www.googleapis.com/auth/gmail.readonly',
+            'https://www.googleapis.com/auth/gmail.labels',
+            'https://www.googleapis.com/auth/gmail.modify',
         ]
-        if os.getenv('ENABLE_LABEL_WRITE_SCOPE', '1').lower() not in ('0', 'false', 'off'):
-            scopes.append('https://www.googleapis.com/auth/gmail.modify')
         self.scopes = scopes
     
     def get_authorization_url(self):
@@ -55,8 +56,7 @@ class GoogleOAuth:
             }
             
             response = requests.post(self.token_uri, data=data)
-            print(f"Token response status: {response.status_code}")
-            print(f"Token response: {response.text}")
+            logger.debug("Token exchange status=%s", response.status_code)
             
             if response.status_code == 200:
                 tokens = response.json()
@@ -68,35 +68,43 @@ class GoogleOAuth:
                         self.id_token = token_data.get('id_token')
                 
                 return Credentials(tokens)
-            else:
-                print(f"Error exchanging code: {response.text}")
-                return None
+            logger.warning("Token exchange failed (status=%s)", response.status_code)
+            return None
                 
-        except Exception as e:
-            print(f"Error exchanging code: {e}")
-            import traceback
-            print(traceback.format_exc())
+        except Exception:
+            logger.exception("Exception while exchanging OAuth code for token")
             return None
     
     def get_user_info(self, credentials):
         """Parse the ID token to extract user info without requesting additional profile scopes."""
         if not credentials or not credentials.id_token:
             return None
-        try:
-            payload = jwt.decode(credentials.id_token, options={"verify_signature": False, "verify_aud": False})
-            email = payload.get('email')
-            sub = payload.get('sub')
-            name = payload.get('name') or (email.split('@')[0] if email else None)
-            picture = payload.get('picture')
-            return {
-                'id': sub,
-                'email': email,
-                'name': name,
-                'picture': picture
-            }
-        except Exception as exc:
-            print(f"Error decoding ID token: {exc}")
+        if not self.client_id:
+            logger.warning("Google OAuth client ID is not configured; cannot verify ID token.")
             return None
+        try:
+            info = id_token.verify_oauth2_token(
+                credentials.id_token,
+                Request(),
+                self.client_id
+            )
+        except ValueError as exc:
+            logger.warning("Invalid Google ID token: %s", exc)
+            return None
+        except Exception:
+            logger.exception("Unexpected error verifying Google ID token")
+            return None
+
+        email = info.get('email')
+        sub = info.get('sub')
+        name = info.get('name') or (email.split('@')[0] if email else None)
+        picture = info.get('picture')
+        return {
+            'id': sub,
+            'email': email,
+            'name': name,
+            'picture': picture
+        }
     
     def refresh_access_token(self, refresh_token):
         """Refresh access token using refresh token"""
@@ -110,10 +118,11 @@ class GoogleOAuth:
             
             response = requests.post(self.token_uri, data=data)
             if response.status_code == 200:
-                return response.json()['access_token']
+                return response.json().get('access_token')
+            logger.warning("Refreshing Google access token failed (status=%s)", response.status_code)
             return None
-        except Exception as e:
-            print(f"Error refreshing token: {e}")
+        except Exception:
+            logger.exception("Error refreshing Google access token")
             return None
 
 
@@ -129,15 +138,14 @@ class GmailHelper:
         try:
             from googleapiclient.discovery import build
             return build('gmail', 'v1', credentials=credentials)
-        except Exception as e:
-            print(f"Error building Gmail service: {e}")
+        except Exception:
+            logger.exception("Error building Gmail service")
             return None
 
     @staticmethod
     def get_gmail_labels(access_token):
         """Fetch all Gmail labels using Gmail API"""
         try:
-            import requests
             headers = {
                 'Authorization': f'Bearer {access_token}',
                 'Content-Type': 'application/json'
@@ -163,13 +171,11 @@ class GmailHelper:
 
                 return labels
             else:
-                print(f"Error fetching Gmail labels: {response.text}")
+                logger.warning("Fetching Gmail labels failed (status=%s)", response.status_code)
                 return None
 
-        except Exception as e:
-            print(f"Error fetching Gmail labels: {e}")
-            import traceback
-            print(traceback.format_exc())
+        except Exception:
+            logger.exception("Error fetching Gmail labels")
             return None
 
     @staticmethod
@@ -194,12 +200,10 @@ class GmailHelper:
             if response.status_code == 200:
                 return response.json().get('id')
             else:
-                print(f"Error creating Gmail label: {response.text}")
+                logger.warning("Creating Gmail label failed (status=%s)", response.status_code)
                 return None
-        except Exception as e:
-            print(f"Error ensuring Gmail label: {e}")
-            import traceback
-            print(traceback.format_exc())
+        except Exception:
+            logger.exception("Error ensuring Gmail label")
             return None
 
     @staticmethod
@@ -226,11 +230,11 @@ class GmailHelper:
             search_params = {'q': f'rfc822msgid:{rfc822_message_id}'}
             search_resp = requests.get(f'{GmailHelper.API_BASE}/messages', headers=headers, params=search_params)
             if search_resp.status_code != 200:
-                print(f"Error searching Gmail message: {search_resp.text}")
+                logger.warning("Searching Gmail message failed (status=%s)", search_resp.status_code)
                 return False
             messages = search_resp.json().get('messages', [])
             if not messages:
-                print("No Gmail message matched the RFC822 Message-ID")
+                logger.warning("No Gmail message matched the RFC822 Message-ID")
                 return False
 
             gmail_message_id = messages[0]['id']
@@ -241,12 +245,10 @@ class GmailHelper:
             )
             if modify_resp.status_code == 200:
                 return True
-            print(f"Error applying Gmail labels: {modify_resp.text}")
+            logger.warning("Applying Gmail labels failed (status=%s) for message %s", modify_resp.status_code, gmail_message_id)
             return False
-        except Exception as e:
-            print(f"Error applying Gmail labels: {e}")
-            import traceback
-            print(traceback.format_exc())
+        except Exception:
+            logger.exception("Error applying Gmail labels")
             return False
 
     @staticmethod
@@ -264,11 +266,11 @@ class GmailHelper:
             search_params = {'q': f'rfc822msgid:{rfc822_message_id}'}
             search_resp = requests.get(f'{GmailHelper.API_BASE}/messages', headers=headers, params=search_params)
             if search_resp.status_code != 200:
-                print(f"Error searching Gmail message: {search_resp.text}")
+                logger.warning("Searching Gmail message for removal failed (status=%s)", search_resp.status_code)
                 return False
             messages = search_resp.json().get('messages', [])
             if not messages:
-                print("No Gmail message matched the RFC822 Message-ID for removal")
+                logger.warning("No Gmail message matched the RFC822 Message-ID for removal")
                 return False
 
             gmail_message_id = messages[0]['id']
@@ -279,12 +281,10 @@ class GmailHelper:
             )
             if modify_resp.status_code == 200:
                 return True
-            print(f"Error removing Gmail labels: {modify_resp.text}")
+            logger.warning("Removing Gmail labels failed (status=%s) for message %s", modify_resp.status_code, gmail_message_id)
             return False
-        except Exception as e:
-            print(f"Error removing Gmail labels: {e}")
-            import traceback
-            print(traceback.format_exc())
+        except Exception:
+            logger.exception("Error removing Gmail labels")
             return False
 
     @staticmethod
@@ -311,7 +311,7 @@ class GmailHelper:
                 if messages:
                     gmail_ids.append(messages[0]['id'])
             elif search_resp.status_code not in (400, 404):
-                print(f"Error searching Gmail message for trash: {search_resp.text}")
+                logger.warning("Error searching Gmail message for trash (status=%s)", search_resp.status_code)
 
             # Fallback: if stored message id already looks like a Gmail internal id,
             # attempt to trash it directly.
@@ -332,11 +332,9 @@ class GmailHelper:
                 if trash_resp.status_code == 404:
                     # Already gone – that's fine
                     return True
-                print(f"Error trashing Gmail message ({gmail_message_id}): {trash_resp.text}")
+                logger.warning("Error trashing Gmail message %s (status=%s)", gmail_message_id, trash_resp.status_code)
 
             return False
-        except Exception as e:
-            print(f"Error moving Gmail message to trash: {e}")
-            import traceback
-            print(traceback.format_exc())
+        except Exception:
+            logger.exception("Error moving Gmail message to trash")
             return False

@@ -950,6 +950,13 @@ def settings():
                     prefs.email_delete_confirmation = confirm_delete
                     updated_fields.append('Delete confirmation ' + ('enabled' if confirm_delete else 'disabled'))
 
+                auto_training_flag = request.form.get('auto_add_training_examples') == 'on'
+                if auto_training_flag != prefs.auto_add_training_examples:
+                    prefs.auto_add_training_examples = auto_training_flag
+                    updated_fields.append(
+                        'Auto-add training examples ' + ('enabled' if auto_training_flag else 'disabled')
+                    )
+
                 sync_mode = request.form.get('sync_label_mode') or 'inbox'
                 sync_mode = sync_mode if sync_mode in ('inbox', 'all', 'label') else 'inbox'
                 if sync_mode == 'label':
@@ -1081,69 +1088,55 @@ def login():
 @auth_bp.route('/google')
 def google_login():
     """Redirect to Google OAuth login"""
-    print("=== Google Login Route Called ===")
-    print(f"GOOGLE_CLIENT_ID: {os.getenv('GOOGLE_CLIENT_ID')}")
-    print(f"GOOGLE_CLIENT_SECRET: {'SET' if os.getenv('GOOGLE_CLIENT_SECRET') else 'NOT SET'}")
-    print(f"GOOGLE_REDIRECT_URI: {os.getenv('GOOGLE_REDIRECT_URI')}")
+    logger.debug("Google OAuth login requested")
+    client_id = os.getenv('GOOGLE_CLIENT_ID')
+    client_secret = os.getenv('GOOGLE_CLIENT_SECRET')
     
-    if os.getenv('GOOGLE_CLIENT_ID') and os.getenv('GOOGLE_CLIENT_SECRET'):
+    if client_id and client_secret:
         try:
             authorization_url, state = google_oauth.get_authorization_url()
-            print(f"Generated authorization URL: {authorization_url[:100]}...")
-            print(f"Generated state: {state}")
             session['oauth_state'] = state
-            print(f"State saved to session: {session.get('oauth_state')}")
-            print(f"Redirecting to: {authorization_url}")
+            logger.debug("OAuth state saved; redirecting user to Google")
             return redirect(authorization_url)
-        except Exception as e:
-            import traceback
-            print(f"Google OAuth Error: {e}")
-            print(traceback.format_exc())
-            return render_template('login.html', error=f"OAuth Error: {str(e)}"), 500
+        except Exception as exc:
+            logger.exception("Google OAuth Error while generating authorization URL")
+            return render_template('login.html', error=f"OAuth Error: {str(exc)}"), 500
     else:
         error_msg = "Google OAuth is not configured. Please set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET in your .env file."
-        print(error_msg)
+        logger.warning(error_msg)
         return render_template('login.html', error=error_msg), 400
 
 @auth_bp.route('/google/callback')
 def google_callback():
     """Handle Google OAuth callback"""
     try:
-        print("=== Google OAuth Callback Started ===")
+        logger.debug("Google OAuth callback started")
         
         # Verify state
         state = request.args.get('state')
-        print(f"State from URL: {state}")
-        print(f"State in session: {session.get('oauth_state')}")
+        stored_state = session.pop('oauth_state', None)
+        logger.debug("OAuth state comparison (received=%s stored=%s)", state, stored_state)
         
-        if state != session.get('oauth_state'):
-            print("State mismatch!")
+        if state != stored_state:
+            logger.warning("OAuth state mismatch detected")
             return redirect(url_for('auth.login'))
         
         # Get authorization code
         code = request.args.get('code')
-        print(f"Authorization code: {code[:20]}..." if code else "No code")
-        
         if not code:
-            print("No authorization code received")
+            logger.warning("No authorization code received from Google")
             return redirect(url_for('auth.login'))
         
         # Exchange code for credentials
-        print("Exchanging code for token...")
         credentials = google_oauth.exchange_code_for_token(code)
-        print(f"Credentials: {credentials}")
-        
         if not credentials:
-            print("Failed to exchange code for credentials")
+            logger.warning("Failed to exchange authorization code for tokens")
             return redirect(url_for('auth.login'))
         
         # Get user info
-        print("Getting user info...")
         user_info = google_oauth.get_user_info(credentials)
-        print(f"User info: {user_info}")
-        
         if not user_info:
-            print("Failed to get user info")
+            logger.warning("Failed to validate Google ID token")
             return redirect(url_for('auth.login'))
         
         # Find or create user
@@ -1155,11 +1148,11 @@ def google_callback():
             
             if user:
                 # Link Google to existing account
-                print(f"Linking Google to existing user: {user.email}")
+                logger.info("Linking Google account to existing user %s", user.email)
                 user.google_id = user_info['id']
             else:
                 # Create new user
-                print(f"Creating new user: {user_info['email']}")
+                logger.info("Creating new user for email %s", user_info['email'])
                 user = User(
                     username=user_info['email'].split('@')[0],
                     email=user_info['email'],
@@ -1174,11 +1167,11 @@ def google_callback():
         user.is_google_connected = True
         
         db.session.commit()
-        print(f"User saved: {user.email}")
+        logger.debug("Saved Google credentials for user %s", user.email)
         
         # Create predefined labels if not exists
         if not Label.query.filter_by(user_id=user.id).first():
-            print("Creating predefined labels...")
+            logger.debug("Creating predefined labels for user %s", user.email)
             predefined = ai_labeler.get_predefined_labels()
             for label_name, label_config in predefined.items():
                 label = Label(
@@ -1191,16 +1184,13 @@ def google_callback():
                 db.session.add(label)
             db.session.commit()
         
-        print(f"Logging in user: {user.email}")
+        logger.info("Logging in user %s via Google", user.email)
         login_user(user)
-        print("=== OAuth Callback Completed Successfully ===")
         return redirect(url_for('main.dashboard'))
     
     except Exception as e:
-        import traceback
         error_msg = f"OAuth callback error: {str(e)}"
-        print(error_msg)
-        print(traceback.format_exc())
+        logger.exception("OAuth callback error")
         return render_template('login.html', error=error_msg), 500
 
 @auth_bp.route('/logout')
@@ -1217,10 +1207,7 @@ def sync_emails():
     logger.info("Starting sync request for user %s (google_connected=%s)", current_user.id, current_user.is_google_connected)
 
     def generate():
-        import sys
-        import traceback
-
-        print("=== SYNC STARTED ===", file=sys.stderr, flush=True)
+        logger.debug("Streaming Gmail sync started for user %s", current_user.id)
         if not (current_user.is_google_connected and current_user.google_access_token):
             logger.warning("User %s attempted sync without Google connection", current_user.id)
             yield f"data: {json.dumps({'error': 'Connect your Google Workspace account to sync emails.'})}\n\n"
@@ -1234,10 +1221,8 @@ def sync_emails():
         try:
             for payload in runner.stream():
                 yield f"data: {json.dumps(payload)}\n\n"
-            print("=== SYNC COMPLETED via GMAIL ===", file=sys.stderr, flush=True)
+            logger.debug("Gmail sync completed for user %s", current_user.id)
         except Exception as e:
-            print("=== SYNC ERROR ===", file=sys.stderr, flush=True)
-            print(traceback.format_exc(), file=sys.stderr, flush=True)
             logger.exception("Sync failed for user %s", current_user.id)
             yield f"data: {json.dumps({'error': f'Sync error: {str(e)}. Check server logs for details.'})}\n\n"
         finally:
@@ -1443,6 +1428,7 @@ def sync_gmail_labels():
 def view_email(email_id):
     """View single email"""
     email_obj = Email.query.filter_by(id=email_id, user_id=current_user.id).first_or_404()
+    prefs = _get_user_preferences(current_user)
     email_obj.is_read = True
     db.session.commit()
 
@@ -1490,7 +1476,8 @@ def view_email(email_id):
         ai_suggestions=filtered_suggestions,
         label_tree=label_tree,
         applied_label_ids=applied_label_ids,
-        ai_summary=ai_summary
+        ai_summary=ai_summary,
+        user_prefs=prefs
     )
 
 @email_bp.route('/<int:email_id>/label', methods=['POST'])
@@ -1510,6 +1497,18 @@ def add_label_to_email(email_id):
         email_obj.labels.append(label)
         db.session.commit()
         gmail_synced = _sync_labels_to_gmail(current_user, email_obj, [label.name])
+
+        try:
+            prefs = _get_user_preferences(current_user)
+            if prefs.auto_add_training_examples:
+                _save_training_example_from_email(email_obj, source='auto_add')
+        except ValueError:
+            logger.debug(
+                'Auto-add training skipped for email %s (needs an extra label besides Inbox)',
+                email_id
+            )
+        except Exception:
+            logger.exception('Auto-add training failed for email %s', email_id)
 
     label_payload = {
         'id': label.id,
@@ -1750,6 +1749,19 @@ def accept_ai_labels(email_id):
             _remove_labels_from_gmail(current_user, email_obj, [inbox_label.name])
     logger.info("User %s applied AI labels %s to email %s (gmail_synced=%s)", current_user.id, applied_names, email_id, gmail_synced)
 
+    if applied_names:
+        try:
+            prefs = _get_user_preferences(current_user)
+            if prefs.auto_add_training_examples:
+                _save_training_example_from_email(email_obj, source='auto_add')
+        except ValueError:
+            logger.debug(
+                'Auto-add training skipped for email %s after AI labels (needs an extra label besides Inbox)',
+                email_id
+            )
+        except Exception:
+            logger.exception('Auto-add training failed for email %s after AI labels', email_id)
+
     return jsonify({
         'success': True,
         'applied': applied_names,
@@ -1760,17 +1772,15 @@ def accept_ai_labels(email_id):
     })
 
 
-@email_bp.route('/<int:email_id>/training-example', methods=['POST'])
-@login_required
-def add_training_example(email_id):
-    """Persist the email as part of the user's training dataset."""
-    email_obj = Email.query.filter_by(id=email_id, user_id=current_user.id).first_or_404()
+def _save_training_example_from_email(email_obj, source='manual'):
     label_names = [lbl.name for lbl in email_obj.labels if lbl and lbl.name]
-    filtered_labels = [name for name in label_names if name.lower() != INBOX_LABEL_NAME.lower()]
+    filtered_labels = [
+        name for name in label_names
+        if name and name.strip().lower() != INBOX_LABEL_NAME.lower()
+    ]
 
     if not filtered_labels:
-        flash('Add at least one label besides Inbox before saving to the training set.', 'error')
-        return redirect(url_for('email.view_email', email_id=email_id))
+        raise ValueError('Add at least one label besides Inbox before saving to the training set.')
 
     payload = {
         'subject': email_obj.subject or '',
@@ -1778,21 +1788,46 @@ def add_training_example(email_id):
         'labels_json': json.dumps(filtered_labels)
     }
 
-    example = TrainingExample.query.filter_by(user_id=current_user.id, email_id=email_obj.id).first()
+    example = TrainingExample.query.filter_by(
+        user_id=email_obj.user_id,
+        email_id=email_obj.id
+    ).first()
     if example:
         for key, value in payload.items():
             setattr(example, key, value)
+        example.source = source
     else:
         example = TrainingExample(
-            user_id=current_user.id,
+            user_id=email_obj.user_id,
             email_id=email_obj.id,
-            source='email_detail',
+            source=source,
             **payload
         )
         db.session.add(example)
 
     db.session.commit()
-    flash('Email saved to your training dataset.', 'success')
+    return example
+
+
+@email_bp.route('/<int:email_id>/training-example', methods=['POST'])
+@login_required
+def add_training_example(email_id):
+    """Persist the email as part of the user's training dataset."""
+    email_obj = Email.query.filter_by(id=email_id, user_id=current_user.id).first_or_404()
+    try:
+        _save_training_example_from_email(email_obj, source='email_detail')
+        response_message = 'Email saved to your training dataset.'
+        success = True
+        status_code = 200
+    except ValueError as exc:
+        response_message = str(exc)
+        success = False
+        status_code = 400
+
+    if request.accept_mimetypes.accept_json and not request.accept_mimetypes.accept_html:
+        return jsonify({'success': success, 'message': response_message}), status_code
+
+    flash(response_message, 'success' if success else 'error')
     return redirect(url_for('email.view_email', email_id=email_id))
 
 

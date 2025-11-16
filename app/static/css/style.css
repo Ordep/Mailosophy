@@ -1310,6 +1310,44 @@ a {
     margin: 0;
 }
 
+.label-panel-footer {
+    margin-top: 16px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    flex-wrap: wrap;
+}
+
+.label-panel-footer .training-feedback {
+    font-size: 0.85rem;
+    min-width: 180px;
+    color: #16a34a;
+}
+
+.training-auto-hint {
+    margin: 0;
+    color: #475569;
+    font-size: 0.82rem;
+}
+
+.training-add-btn {
+    gap: 8px;
+}
+
+.training-add-btn .btn-icon {
+    width: 18px;
+    height: 18px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.training-add-btn .btn-icon svg {
+    width: 16px;
+    height: 16px;
+    fill: currentColor;
+}
+
 
 .link-btn {
     border: none;

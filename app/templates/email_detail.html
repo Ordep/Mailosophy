@@ -139,6 +139,21 @@
                     </div>
                 </div>
             </div>
+            <div class="label-panel-footer">
+                <button type="button" class="btn-pill secondary training-add-btn" id="saveTrainingBtn">
+                    <span class="btn-icon" aria-hidden="true">
+                        <svg viewBox="0 0 20 20" role="presentation" focusable="false">
+                            <path d="M10 3.75a.75.75 0 01.75.75v4.75h4.75a.75.75 0 110 1.5H10.75V15a.75.75 0 11-1.5 0v-4.75H4.5a.75.75 0 010-1.5h4.75V4.5A.75.75 0 0110 3.75z" />
+                        </svg>
+                    </span>
+                    Add to training set
+                </button>
+                <span class="training-feedback" id="trainingFeedback" aria-live="polite"></span>
+                <p class="training-auto-hint" id="trainingAutoHint"
+                   {% if not user_prefs.auto_add_training_examples %}hidden{% endif %}>
+                    Auto-add training examples is enabled in Settings; every label change saves automatically.
+                </p>
+            </div>
         </section>
     </div>
 
@@ -650,6 +665,54 @@ if (deleteEmailBtn) {
             console.error('Error deleting email:', error);
             alert('An error occurred while deleting the email.');
             deleteEmailBtn.disabled = false;
+        }
+    });
+}
+
+const saveTrainingBtn = document.getElementById('saveTrainingBtn');
+const trainingFeedback = document.getElementById('trainingFeedback');
+let trainingFeedbackTimeout;
+
+function setTrainingFeedback(message, isError = false) {
+    if (!trainingFeedback) {
+        return;
+    }
+    trainingFeedback.textContent = message;
+    trainingFeedback.style.color = isError ? '#dc2626' : '#059669';
+    if (trainingFeedbackTimeout) {
+        clearTimeout(trainingFeedbackTimeout);
+        trainingFeedbackTimeout = undefined;
+    }
+    if (message) {
+        trainingFeedbackTimeout = setTimeout(() => setTrainingFeedback(''), 4500);
+    }
+}
+
+if (saveTrainingBtn) {
+    const originalText = saveTrainingBtn.textContent;
+    saveTrainingBtn.addEventListener('click', async () => {
+        saveTrainingBtn.disabled = true;
+        saveTrainingBtn.textContent = 'Saving...';
+        try {
+            const response = await fetch(`/email/${emailId}/training-example`, {
+                method: 'POST',
+                credentials: 'same-origin',
+                headers: {
+                    'Accept': 'application/json'
+                }
+            });
+            const data = await response.json();
+            const isError = !data.success;
+            setTrainingFeedback(
+                data.message || (isError ? 'Unable to save training example.' : 'Saved to your training dataset.'),
+                isError
+            );
+        } catch (err) {
+            console.error('Training error:', err);
+            setTrainingFeedback('Unable to save training example.', true);
+        } finally {
+            saveTrainingBtn.disabled = false;
+            saveTrainingBtn.textContent = originalText;
         }
     });
 }

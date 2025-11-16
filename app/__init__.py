@@ -21,6 +21,17 @@ def create_app():
     app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'dev-secret-key')
     app.config['SQLALCHEMY_DATABASE_URI'] = os.getenv('DATABASE_URL', 'sqlite:///Mailosophy.db')
     app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+    is_production = os.getenv('FLASK_ENV') == 'production'
+    app.config.update({
+        'SESSION_COOKIE_HTTPONLY': True,
+        'SESSION_COOKIE_SAMESITE': 'Lax',
+        'REMEMBER_COOKIE_HTTPONLY': True,
+        'SESSION_COOKIE_SECURE': is_production,
+        'REMEMBER_COOKIE_SECURE': is_production,
+    })
+
+    if is_production and app.config['SECRET_KEY'] == 'dev-secret-key':
+        raise RuntimeError('SECRET_KEY must be set before starting in production.')
 
     # Initialize extensions
     db.init_app(app)
