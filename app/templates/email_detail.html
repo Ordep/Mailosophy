@@ -64,9 +64,10 @@
             {% set is_assigned = label_obj and label_obj.id in applied_ids %}
             <li class="label-tree-node collapsed" data-level="{{ level }}">
                 <div class="label-tree-row {% if is_assigned %}is-assigned{% endif %}"
-                     {% if label_obj and not is_assigned %}
+                     {% if label_obj %}
                      data-label-id="{{ label_obj.id }}"
                      data-label-name="{{ label_obj.name|e }}"
+                     data-label-color="{{ label_obj.color }}"
                      role="button"
                      tabindex="0"
                      {% endif %}>
@@ -111,9 +112,14 @@
             </div>
             <div class="labels-container">
                 {% for label in email.labels %}
-                <span class="label-tag" style="background-color: {{ label.color }}">
-                    {{ label.name }}
-                    <button class="label-badge-remove" data-label-id="{{ label.id }}" onclick="removeLabel(event, {{ label.id }})">&times;</button>
+                <span class="label-tag" data-label-id="{{ label.id }}" style="background-color: {{ label.color }}">
+                    <span class="label-tag-text">{{ label.name }}</span>
+                    <button type="button"
+                            class="label-badge-remove"
+                            data-label-id="{{ label.id }}"
+                            aria-label="Remove {{ label.name }}">
+                        &times;
+                    </button>
                 </span>
                 {% endfor %}
                 <div id="aiSuggestionContainer"></div>
@@ -183,9 +189,16 @@
 <script>
 const emailId = {{ email.id }};
 let currentSuggestions = {{ ai_suggestions|tojson }} || [];
+const labelsContainer = document.querySelector('.labels-container');
+const aiSuggestionContainer = document.getElementById('aiSuggestionContainer');
+const normalizeKey = (value) => (value || '').trim().toLowerCase();
 
 async function removeLabel(event, labelId) {
     event.stopPropagation();
+    const button = event.target.closest('.label-badge-remove');
+    if (button) {
+        button.disabled = true;
+    }
     try {
         const response = await fetch(`/email/${emailId}/label/${labelId}`, {
             method: 'DELETE',
@@ -193,13 +206,21 @@ async function removeLabel(event, labelId) {
         });
         const data = await response.json();
         if (data.success) {
-            location.reload();
+            removeLabelChip(labelId);
+            const row = labelRowById.get(String(labelId));
+            if (row) {
+                setRowAssignment(row, false);
+            }
         } else {
             alert(data.message || 'Unable to remove label.');
         }
     } catch (error) {
         console.error('Error:', error);
         alert('An error occurred while removing the label.');
+    } finally {
+        if (button) {
+            button.disabled = false;
+        }
     }
 }
 
@@ -230,10 +251,115 @@ function resetFontSize() {
 
 const labelPickerBtn = document.getElementById('labelPickerBtn');
 const labelPickerPanel = document.getElementById('labelPickerPanel');
+const labelRowElements = labelPickerPanel ? Array.from(labelPickerPanel.querySelectorAll('.label-tree-row[data-label-id]')) : [];
+const labelRowById = new Map();
+const labelRowByName = new Map();
+
+labelRowElements.forEach((row) => {
+    const labelId = row.dataset.labelId;
+    const labelName = row.dataset.labelName;
+    if (labelId) {
+        labelRowById.set(labelId, row);
+    }
+    if (labelName) {
+        labelRowByName.set(normalizeKey(labelName), row);
+    }
+});
 
 function closeLabelPicker() {
     if (labelPickerPanel) {
         labelPickerPanel.classList.remove('open');
+    }
+}
+
+const defaultLabelColor = '#a855f7';
+
+function setRowAssignment(row, assigned) {
+    if (!row) {
+        return;
+    }
+    row.classList.toggle('is-assigned', Boolean(assigned));
+    row.dataset.assigned = assigned ? '1' : '';
+    if (assigned) {
+        if (!row.querySelector('.label-tree-status')) {
+            const status = document.createElement('span');
+            status.className = 'label-tree-status';
+            status.textContent = 'Applied';
+            row.appendChild(status);
+        }
+    } else {
+        const status = row.querySelector('.label-tree-status');
+        if (status) {
+            status.remove();
+        }
+    }
+}
+
+function getLabelRowByName(labelName) {
+    return labelRowByName.get(normalizeKey(labelName)) || null;
+}
+
+function findLabelChip(labelId) {
+    if (!labelsContainer || !labelId) {
+        return null;
+    }
+    return labelsContainer.querySelector('.label-tag[data-label-id="' + labelId + '"]');
+}
+
+function removeLabelChip(labelId) {
+    const chip = findLabelChip(labelId);
+    if (chip) {
+        chip.remove();
+    }
+}
+
+function addLabelChip(labelId, labelName, color) {
+    if (!labelsContainer || !labelName) {
+        return null;
+    }
+    const existing = labelId ? findLabelChip(labelId) : null;
+    if (existing) {
+        return existing;
+    }
+    const chip = document.createElement('span');
+    chip.className = 'label-tag';
+    if (labelId) {
+        chip.dataset.labelId = labelId;
+    }
+    chip.style.backgroundColor = color || defaultLabelColor;
+
+    const text = document.createElement('span');
+    text.className = 'label-tag-text';
+    text.textContent = labelName;
+    chip.appendChild(text);
+
+    const removeBtn = document.createElement('button');
+    removeBtn.type = 'button';
+    removeBtn.className = 'label-badge-remove';
+    removeBtn.setAttribute('aria-label', 'Remove ' + labelName);
+    if (labelId) {
+        removeBtn.dataset.labelId = labelId;
+    }
+    removeBtn.textContent = '×';
+    chip.appendChild(removeBtn);
+
+    if (aiSuggestionContainer && aiSuggestionContainer.parentElement === labelsContainer) {
+        labelsContainer.insertBefore(chip, aiSuggestionContainer);
+    } else {
+        labelsContainer.appendChild(chip);
+    }
+    return chip;
+}
+
+function handleLabelApplied({ id, name, color } = {}) {
+    if (!name) {
+        return;
+    }
+    const labelId = id || '';
+    addLabelChip(labelId, name, color || defaultLabelColor);
+    const row = labelId ? labelRowById.get(String(labelId)) : getLabelRowByName(name);
+    if (row) {
+        setRowAssignment(row, true);
     }
 }
 
@@ -255,17 +381,20 @@ async function addLabelToEmail(labelId, labelName, rowEl) {
         });
         const data = await response.json();
         if (data.success) {
+            const payload = data.label || {
+                id: labelId,
+                name: labelName,
+                color: rowEl?.dataset.labelColor
+            };
+            handleLabelApplied(payload);
             closeLabelPicker();
-            location.reload();
         } else {
             alert(data.message || 'Unable to add label.');
-            if (rowEl) {
-                rowEl.classList.remove('is-loading');
-            }
         }
     } catch (error) {
         console.error('Error adding label:', error);
         alert('An error occurred while adding the label.');
+    } finally {
         if (rowEl) {
             rowEl.classList.remove('is-loading');
         }
@@ -329,6 +458,9 @@ if (labelPickerPanel) {
         row.addEventListener('click', (event) => {
             event.preventDefault();
             event.stopPropagation();
+            if (row.classList.contains('is-assigned')) {
+                return;
+            }
             const labelId = row.dataset.labelId;
             const labelName = row.dataset.labelName || '';
             addLabelToEmail(labelId, labelName, row);
@@ -336,7 +468,21 @@ if (labelPickerPanel) {
     });
 }
 
-const aiSuggestionContainer = document.getElementById('aiSuggestionContainer');
+if (labelsContainer) {
+    labelsContainer.addEventListener('click', (event) => {
+        const removeBtn = event.target.closest('.label-badge-remove');
+        if (!removeBtn) {
+            return;
+        }
+        event.stopPropagation();
+        const labelId = removeBtn.dataset.labelId;
+        if (!labelId) {
+            return;
+        }
+        removeLabel(event, labelId);
+    });
+}
+
 const regenerateBtn = document.getElementById('regenerateSuggestionsBtn');
 const deleteEmailBtn = document.getElementById('deleteEmailBtn');
 
@@ -362,8 +508,13 @@ function renderSuggestionChips(list) {
     aiSuggestionContainer.innerHTML = items;
 }
 
-async function applyAiLabel(label) {
-    if (!label) return;
+async function applyAiLabel(label, chipEl) {
+    if (!label) {
+        return;
+    }
+    if (chipEl) {
+        chipEl.dataset.disabled = '1';
+    }
     try {
         const response = await fetch(`/email/${emailId}/ai-accept`, {
             method: 'POST',
@@ -373,13 +524,40 @@ async function applyAiLabel(label) {
         });
         const data = await response.json();
         if (data.success) {
-            setTimeout(() => window.location.reload(), 400);
+            const appliedDetails = Array.isArray(data.applied_labels) ? data.applied_labels : [];
+            const appliedNames = Array.isArray(data.applied) ? data.applied : [];
+            const appliedSet = new Set();
+
+            if (appliedDetails.length) {
+                appliedDetails.forEach((item) => {
+                    handleLabelApplied(item);
+                    if (item.name) {
+                        appliedSet.add(item.name);
+                    }
+                });
+            } else if (appliedNames.length) {
+                appliedNames.forEach((name) => {
+                    handleLabelApplied({ name });
+                    appliedSet.add(name);
+                });
+            }
+
+            if (Array.isArray(data.remaining_suggestions)) {
+                currentSuggestions = data.remaining_suggestions.slice();
+            } else if (appliedSet.size > 0) {
+                currentSuggestions = currentSuggestions.filter(item => !appliedSet.has(item));
+            }
+            renderSuggestionChips(currentSuggestions);
         } else {
             alert(data.message || 'Failed to apply AI label.');
         }
     } catch (error) {
         console.error('Error applying AI label:', error);
         alert('An error occurred while applying the label.');
+    } finally {
+        if (chipEl) {
+            chipEl.dataset.disabled = '';
+        }
     }
 }
 
@@ -417,7 +595,7 @@ if (aiSuggestionContainer) {
 
         const chip = event.target.closest('.ai-chip-action');
         if (chip) {
-            applyAiLabel(chip.dataset.label);
+            applyAiLabel(chip.dataset.label, chip);
         }
     });
 }

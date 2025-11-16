@@ -1510,8 +1510,18 @@ def add_label_to_email(email_id):
         email_obj.labels.append(label)
         db.session.commit()
         gmail_synced = _sync_labels_to_gmail(current_user, email_obj, [label.name])
-    
-    return jsonify({'success': True, 'gmail_synced': gmail_synced})
+
+    label_payload = {
+        'id': label.id,
+        'name': label.name,
+        'color': label.color
+    }
+
+    return jsonify({
+        'success': True,
+        'gmail_synced': gmail_synced,
+        'label': label_payload
+    })
 
 @email_bp.route('/<int:email_id>/label/<int:label_id>', methods=['DELETE'])
 @login_required
@@ -1682,7 +1692,7 @@ def accept_ai_labels(email_id):
         if not labels_to_apply:
             return jsonify({'success': False, 'message': f"Label '{target_label}' is not part of the AI suggestions."}), 404
 
-    applied = []
+    applied_details = []
     predefined = ai_labeler.get_predefined_labels()
 
     for label_name in labels_to_apply:
@@ -1702,12 +1712,18 @@ def accept_ai_labels(email_id):
 
         if label not in email_obj.labels:
             email_obj.labels.append(label)
-            applied.append(label.name)
+            applied_details.append({
+                'id': label.id,
+                'name': label.name,
+                'color': label.color
+            })
 
-    if applied:
+    applied_names = [item['name'] for item in applied_details]
+    remaining = []
+    if applied_names:
         remaining = [
             label for label in suggestions
-            if label not in applied
+            if label not in applied_names
         ]
         if remaining:
             email_obj.ai_suggested_labels = json.dumps(remaining)
@@ -1728,15 +1744,17 @@ def accept_ai_labels(email_id):
         removed_inbox = True
 
     gmail_synced = False
-    if applied and current_user.is_google_connected and current_user.google_access_token:
-        gmail_synced = _sync_labels_to_gmail(current_user, email_obj, applied)
+    if applied_names and current_user.is_google_connected and current_user.google_access_token:
+        gmail_synced = _sync_labels_to_gmail(current_user, email_obj, applied_names)
         if removed_inbox:
             _remove_labels_from_gmail(current_user, email_obj, [inbox_label.name])
-    logger.info("User %s applied AI labels %s to email %s (gmail_synced=%s)", current_user.id, applied, email_id, gmail_synced)
+    logger.info("User %s applied AI labels %s to email %s (gmail_synced=%s)", current_user.id, applied_names, email_id, gmail_synced)
 
     return jsonify({
         'success': True,
-        'applied': applied,
+        'applied': applied_names,
+        'applied_labels': applied_details,
+        'remaining_suggestions': remaining,
         'gmail_synced': gmail_synced,
         'removed_inbox': removed_inbox
     })
@@ -1947,6 +1965,8 @@ def delete_emails():
     if not emails:
         return jsonify({'success': False, 'message': 'No matching emails found.'}), 404
 
+    deleted_ids = [email_obj.id for email_obj in emails]
+
     deleted = len(emails)
     remote_failures = 0
     for email_obj in emails:
@@ -1971,6 +1991,7 @@ def delete_emails():
     return jsonify({
         'success': True,
         'deleted': deleted,
+        'deleted_ids': deleted_ids,
         'remote_deleted': deleted - remote_failures,
         'remote_failed': remote_failures
     })

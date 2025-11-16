@@ -110,6 +110,51 @@ function adjustQuickCount(key, delta) {
     el.textContent = next;
 }
 
+function getEmailCardById(emailId) {
+    if (emailId === undefined || emailId === null) {
+        return null;
+    }
+    const normalized = String(emailId);
+    return document.querySelector(`.email-card[data-email-id="${normalized}"]`);
+}
+
+function countInboxCards(ids = []) {
+    if (!ids?.length) {
+        return 0;
+    }
+    return ids.reduce((count, identifier) => {
+        const card = getEmailCardById(identifier);
+        if (card && card.dataset.hasInbox === '1') {
+            return count + 1;
+        }
+        return count;
+    }, 0);
+}
+
+function reflowSelectionAfterRemoval() {
+    setTimeout(() => {
+        updateDeleteButtonState();
+    }, 320);
+}
+
+function removeEmailsFromUI(ids = [], deletedCount) {
+    if (!ids?.length) {
+        return;
+    }
+    const uniqueIds = Array.from(new Set(ids.map(id => String(id))));
+    if (!uniqueIds.length) {
+        return;
+    }
+    const inboxRemovals = countInboxCards(uniqueIds);
+    removeCardsByIds(uniqueIds);
+    const totalDelta = Number.isFinite(deletedCount) ? deletedCount : uniqueIds.length;
+    adjustQuickCount('all', -totalDelta);
+    if (inboxRemovals) {
+        adjustQuickCount('inbox', -inboxRemovals);
+    }
+    reflowSelectionAfterRemoval();
+}
+
 function removeCardsByIds(ids) {
     if (!ids?.length) return;
     const idSet = new Set(ids.map(id => String(id)));
@@ -487,8 +532,9 @@ if (deleteEmailsBtn) {
             });
             const data = await response.json();
             if (data.success) {
+                const removedIds = data.deleted_ids || emailIds;
+                removeEmailsFromUI(removedIds, data.deleted || removedIds.length);
                 notify(`${data.deleted} email${data.deleted === 1 ? '' : 's'} deleted.`, 'success');
-                location.reload();
             } else {
                 notify(data.message || 'Failed to delete emails.', 'error');
                 deleteEmailsBtn.disabled = false;
@@ -800,7 +846,9 @@ document.querySelectorAll('.email-delete-btn').forEach(button => {
             });
             const data = await response.json();
             if (data.success) {
-                button.closest('.email-card')?.remove();
+                setIconButtonLoading(button, false);
+                const removedIds = data.deleted_ids || [emailId];
+                removeEmailsFromUI(removedIds, data.deleted || removedIds.length);
                 notify(data.message || 'Email deleted.', 'success');
             } else {
                 notify(data.message || 'Failed to delete email.', 'error');

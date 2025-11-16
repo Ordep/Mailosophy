@@ -142,8 +142,10 @@
             {% if emails.items %}
             <div class="emails-grid layout-3" id="emailsGrid">
                 {% for email in emails.items %}
+                {% set has_inbox_label = inbox_label and (inbox_label.id in (email.labels | map(attribute='id') | list)) %}
                 <div class="email-card {% if email.ai_suggested_labels and not email.ai_suggestion_applied %}email-card-highlight{% endif %}"
                      data-email-id="{{ email.id }}"
+                     data-has-inbox="{{ '1' if has_inbox_label else '0' }}"
                      draggable="true">
                     <div class="email-card-main">
                         <div class="email-card-info" onclick="window.location.href='{{ url_for('email.view_email', email_id=email.id) }}'">
@@ -289,7 +291,6 @@ window.Mailosophy_REQUIRE_DELETE_CONFIRM = {{ 'true' if prefs.email_delete_confi
 </script>
 <script src="{{ url_for("static", filename="js/dashboard.js") }}"></script>
 {% endblock %}
-
 
 
 
