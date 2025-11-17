@@ -12,8 +12,10 @@ const confirmDeleteEnabled = window.Mailosophy_REQUIRE_DELETE_CONFIRM !== false;
 
 const quickCounts = {
     all: document.querySelector('[data-quick-count="all"]'),
-    inbox: document.querySelector('[data-quick-count="inbox"]')
+    inbox: document.querySelector('[data-quick-count="inbox"]'),
+    starred: document.querySelector('[data-quick-count="starred"]')
 };
+
 
 const notify = (message, variant = 'info') => {
     if (typeof window.showToast === 'function') {
@@ -129,6 +131,39 @@ function countInboxCards(ids = []) {
         }
         return count;
     }, 0);
+}
+
+async function toggleEmailImportance(emailId, button) {
+    if (!emailId) {
+        return;
+    }
+    const currentState = button.classList.contains('active');
+    const desiredState = !currentState;
+    try {
+        const response = await fetch(`/email/${emailId}/important`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            credentials: 'same-origin',
+            body: JSON.stringify({ important: desiredState })
+        });
+        const data = await response.json();
+        if (data.success) {
+            button.classList.toggle('active', data.important);
+            const title = data.important ? 'Unstar this email' : 'Star this email';
+            button.setAttribute('title', title);
+            button.setAttribute('aria-label', title);
+            if (typeof data.delta === 'number' && data.delta) {
+                adjustQuickCount('starred', data.delta);
+            }
+        } else {
+            notify(data.message || 'Unable to update importance.');
+        }
+    } catch (err) {
+        console.error('Unable to update email importance', err);
+        notify('Unable to update email importance.');
+    }
 }
 
 function reflowSelectionAfterRemoval() {
@@ -889,3 +924,12 @@ async function deleteLabel(event, labelId, labelName) {
 }
 
 setupDragAndDrop();
+
+document.addEventListener('click', (event) => {
+    const importantBtn = event.target.closest('.email-important-btn');
+    if (!importantBtn) {
+        return;
+    }
+    event.stopPropagation();
+    toggleEmailImportance(importantBtn.dataset.emailId, importantBtn);
+});

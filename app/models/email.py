@@ -16,6 +16,7 @@ class Email(db.Model):
     is_starred = db.Column(db.Boolean, default=False)
     ai_suggested_labels = db.Column(db.Text)
     ai_suggestion_applied = db.Column(db.Boolean, default=False)
+    is_important = db.Column(db.Boolean, default=False)
     created_at = db.Column(db.DateTime, default=db.func.now())
     
     # Relationships

@@ -22,7 +22,7 @@ class GoogleOAuth:
         self.auth_uri = 'https://accounts.google.com/o/oauth2/v2/auth'
         self.token_uri = 'https://oauth2.googleapis.com/token'
         scopes = [
-            'https://www.googleapis.com/auth/gmail.labels',
+            'openid',
             'https://www.googleapis.com/auth/gmail.modify',
         ]
         self.scopes = scopes
@@ -57,7 +57,7 @@ class GoogleOAuth:
             
             response = requests.post(self.token_uri, data=data)
             logger.debug("Token exchange status=%s", response.status_code)
-            
+
             if response.status_code == 200:
                 tokens = response.json()
                 # Create a credentials-like object

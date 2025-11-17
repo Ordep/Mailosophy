@@ -496,6 +496,22 @@ a {
     background: #eff4ff;
 }
 
+.quick-card.starred {
+    border-color: #f59e0b;
+}
+
+.quick-card.starred.active {
+    background: rgba(245, 158, 11, 0.15);
+}
+
+.quick-card.trash {
+    border-color: #dc2626;
+}
+
+.quick-card.trash.active {
+    background: rgba(220, 38, 38, 0.15);
+}
+
 .quick-card-icon {
     font-size: 1.2rem;
 }
@@ -1082,6 +1098,19 @@ a {
 .email-delete-btn:hover {
     background: #fee2e2;
     border-color: #fca5a5;
+}
+
+.email-important-btn.active svg {
+    fill: #fbbf24;
+}
+
+.email-important-btn svg {
+    fill: #475569;
+}
+
+.email-important-btn.active {
+    border-color: #fbbf24;
+    background: rgba(251, 191, 36, 0.15);
 }
 
 .email-labels {

@@ -35,6 +35,15 @@
                         id="deleteEmailBtn">
                     Delete Email
                 </button>
+                <button type="button"
+                        class="email-important-btn icon-btn {% if email.is_important %}active{% endif %}"
+                        id="detailImportantBtn"
+                        aria-label="{{ 'Unstar this email' if email.is_important else 'Star this email' }}"
+                        title="{{ 'Unstar this email' if email.is_important else 'Star this email' }}">
+                    <svg viewBox="0 0 24 24" role="presentation" focusable="false">
+                        <path d="M12 5.5l2.59 5.25 5.84.85-4.22 4.11 1 5.83L12 18.5l-5.21 2.74 1-5.83L3.57 11.6l5.84-.85z"></path>
+                    </svg>
+                </button>
             </div>
         </div>
     </div>
@@ -749,6 +758,31 @@ if (summaryButton) {
 }
 
 renderSuggestionChips(currentSuggestions);
-applyFontSize();
+    applyFontSize();
+
+const detailImportantBtn = document.getElementById('detailImportantBtn');
+if (detailImportantBtn) {
+    detailImportantBtn.addEventListener('click', async () => {
+        const emailId = {{ email.id }};
+        const desired = !detailImportantBtn.classList.contains('active');
+        try {
+            const response = await fetch(`/email/${emailId}/important`, {
+                method: 'POST',
+                credentials: 'same-origin',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ important: desired })
+            });
+            const data = await response.json();
+                if (data.success) {
+                    detailImportantBtn.classList.toggle('active', data.important);
+                } else {
+                alert(data.message || 'Unable to update importance.');
+            }
+        } catch (err) {
+            console.error('Error updating importance:', err);
+            alert('Unable to update importance.');
+        }
+    });
+}
 </script>
 {% endblock %}

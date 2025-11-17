@@ -55,6 +55,11 @@ def create_app():
                     conn.execute(text('ALTER TABLE user_preferences ADD COLUMN email_delete_confirmation BOOLEAN DEFAULT 1'))
         from app.models.user import UserPreference
         UserPreference.ensure_email_delete_column(db.engine)
+        if 'emails' in inspector.get_table_names():
+            email_columns = {col['name'] for col in inspector.get_columns('emails')}
+            if 'is_important' not in email_columns:
+                with db.engine.connect() as conn:
+                    conn.execute(text('ALTER TABLE emails ADD COLUMN is_important BOOLEAN DEFAULT 0'))
 
     # Register blueprints
     from app.routes import main_bp, auth_bp, email_bp, label_bp, start_auto_sync_worker

@@ -87,6 +87,16 @@
                     </div>
                 </a>
                 {% endif %}
+                {% if starred_label %}
+                <a href="{{ url_for("main.dashboard", label=starred_label.id) }}"
+                   class="quick-card starred {% if not force_all and selected_label == starred_label.id %}active{% endif %}">
+                    <div class="quick-card-icon">&#9889;</div>
+                    <div class="quick-card-meta">
+                        <span class="quick-card-title">{{ starred_label.name }}</span>
+                        <span class="quick-card-count" data-quick-count="starred">{{ starred_count }}</span>
+                    </div>
+                </a>
+                {% endif %}
             </div>
 
             <div class="label-section-header">Labels</div>
@@ -199,6 +209,15 @@
                                     <path d="M10 3a2 2 0 0 0-2 2v1H5.5a.5.5 0 0 0 0 1H6v13a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V7h.5a.5.5 0 0 0 0-1H16V5a2 2 0 0 0-2-2h-4zm1 2h2a1 1 0 0 1 1 1v1h-4V6a1 1 0 0 1 1-1zm-2.5 4h1a.5.5 0 0 1 .5.5v8a.5.5 0 0 1-1 0v-8a.5.5 0 0 1 .5-.5zm5 0h1a.5.5 0 0 1 .5.5v8a.5.5 0 0 1-1 0v-8a.5.5 0 0 1 .5-.5z"></path>
                                 </svg>
                             </button>
+                            <button type="button"
+                                    class="email-important-btn icon-btn {% if email.is_important %}active{% endif %}"
+                                    data-email-id="{{ email.id }}"
+                                    aria-label="{{ 'Unmark as important' if email.is_important else 'Mark as important' }}"
+                                    title="{{ 'Unmark as important' if email.is_important else 'Mark as important' }}">
+                                <svg viewBox="0 0 24 24" role="presentation" focusable="false">
+                                    <path d="M12 5.5l2.59 5.25 5.84.85-4.22 4.11 1 5.83L12 18.5l-5.21 2.74 1-5.83L3.57 11.6l5.84-.85z"></path>
+                                </svg>
+                            </button>
                         </div>
                     </div>
                     <div class="email-labels">
@@ -291,7 +310,3 @@ window.Mailosophy_REQUIRE_DELETE_CONFIRM = {{ 'true' if prefs.email_delete_confi
 </script>
 <script src="{{ url_for("static", filename="js/dashboard.js") }}"></script>
 {% endblock %}
-
-
-
-

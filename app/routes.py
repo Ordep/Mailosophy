@@ -15,12 +15,19 @@ import logging
 import threading
 import time
 
-import openai
+from openai import OpenAI
 from sqlalchemy.exc import IntegrityError
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 AUTO_AI_ENABLED = os.getenv('ENABLE_AUTO_AI_SUGGESTIONS', '1').lower() not in ('0', 'false', 'off')
+
+def _get_openai_client():
+    """Get OpenAI client instance."""
+    api_key = os.getenv('OPENAI_API_KEY')
+    if not api_key:
+        return None
+    return OpenAI(api_key=api_key)
 INBOX_LABEL_NAME = 'Inbox'
 INBOX_LABEL_COLOR = os.getenv('INBOX_LABEL_COLOR', '#0ea5e9')
 GMAIL_SYSTEM_LABELS = {
@@ -108,32 +115,32 @@ def _refresh_custom_model_statuses(user):
     if not models:
         return
 
-    model_name = ensure_openai_ready(raise_error=False)
-    if not model_name:
+    client = _get_openai_client()
+    if not client:
         return
 
     for model in models:
         if not model.openai_job_id:
             continue
         try:
-            job = openai.FineTuningJob.retrieve(model.openai_job_id)
+            job = client.fine_tuning.jobs.retrieve(model.openai_job_id)
         except Exception as exc:
             logger.warning("Unable to refresh fine-tune job %s: %s", model.openai_job_id, exc)
             continue
 
         updated = False
-        new_status = job.get('status')
+        new_status = job.status
         if new_status and new_status != model.status:
             model.status = new_status
             updated = True
 
         if new_status == 'succeeded':
-            model.openai_model_name = job.get('fine_tuned_model')
+            model.openai_model_name = job.fine_tuned_model
             model.completed_at = datetime.utcnow()
             updated = True
         elif new_status == 'failed':
-            error_info = job.get('error') or {}
-            model.error_message = error_info.get('message')
+            error_info = job.error if hasattr(job, 'error') else None
+            model.error_message = error_info.message if error_info else None
             updated = True
 
         if updated:
@@ -197,14 +204,17 @@ def _start_custom_model_training(user, examples):
     if not examples:
         raise ValueError('No training examples available.')
 
-    ensure_openai_ready()
+    client = _get_openai_client()
+    if not client:
+        raise RuntimeError('OpenAI client is not configured.')
+
     dataset_path, label_set = _export_training_dataset(user, examples)
 
     try:
         with open(dataset_path, 'rb') as dataset_handle:
-            upload = openai.File.create(file=dataset_handle, purpose='fine-tune')
+            upload = client.files.create(file=dataset_handle, purpose='fine-tune')
 
-        job = openai.FineTuningJob.create(
+        job = client.fine_tuning.jobs.create(
             training_file=upload.id,
             model=DEFAULT_OPENAI_MODEL,
             suffix=f"mailosophy-u{user.id}"
@@ -216,7 +226,7 @@ def _start_custom_model_training(user, examples):
             base_model=DEFAULT_OPENAI_MODEL,
             openai_file_id=upload.id,
             openai_job_id=job.id,
-            status=job.get('status', 'running'),
+            status=job.status if hasattr(job, 'status') else 'running',
             training_example_count=len(examples),
             label_set=json.dumps(label_set)
         )
@@ -350,6 +360,28 @@ def ensure_inbox_label(user, commit=False):
         db.session.flush()
     return label
 
+
+def ensure_starred_label(user, commit=False):
+    """Ensure the system Starred label exists for the user."""
+    label = Label.query.filter_by(user_id=user.id, name='Starred').first()
+    if label:
+        return label
+
+    label = Label(
+        user_id=user.id,
+        name='Starred',
+        color='#fbbf24',
+        is_predefined=True,
+        description='Starred emails',
+        gmail_label_id='STARRED'
+    )
+    db.session.add(label)
+    if commit:
+        db.session.commit()
+    else:
+        db.session.flush()
+    return label
+
 _SYNC_LOCK = threading.Lock()
 _ACTIVE_SYNC_USERS = set()
 _AUTO_SYNC_THREAD = None
@@ -457,6 +489,10 @@ class GmailSyncRunner:
             }
 
         yield {'status': 'connecting', 'message': 'Connecting to Gmail API...'}
+        if not self.user.google_access_token and self.user.google_refresh_token:
+            if not _refresh_google_access_token(self.user):
+                yield {'error': 'Google refresh token invalid. Please reconnect your Google account.'}
+                return
         client = self._get_gmail_client()
         if not client:
             self.logger.warning(
@@ -632,6 +668,7 @@ class GmailSyncRunner:
         new_emails_to_insert = [e for e in all_emails if e['message_id'] not in existing_message_ids]
         new_email_payloads = []
         inbox_label = ensure_inbox_label(self.user)
+        starred_label = ensure_starred_label(self.user)
         label_map = {
             lbl.gmail_label_id: lbl
             for lbl in Label.query.filter(
@@ -662,15 +699,24 @@ class GmailSyncRunner:
             label_ids = email_data.get('label_ids') or []
             assigned_labels = 0
             has_inbox_label = False
+            has_starred_label = False
             for raw_gid in label_ids:
                 gid = str(raw_gid).strip()
                 if gid.upper() == 'INBOX':
                     has_inbox_label = True
                     continue
+                if gid.upper() == 'STARRED':
+                    has_starred_label = True
+                    continue
                 label_obj = label_map.get(gid)
                 if label_obj and label_obj not in email_obj.labels:
                     email_obj.labels.append(label_obj)
                     assigned_labels += 1
+
+            if has_starred_label:
+                email_obj.is_important = True
+                if starred_label and starred_label not in email_obj.labels:
+                    email_obj.labels.append(starred_label)
 
             if (has_inbox_label or assigned_labels == 0) and inbox_label and inbox_label not in email_obj.labels:
                 email_obj.labels.append(inbox_label)
@@ -828,13 +874,30 @@ def dashboard():
 
     labels = Label.query.filter_by(user_id=current_user.id).all()
     inbox_label = next((lbl for lbl in labels if lbl.name.lower() == INBOX_LABEL_NAME.lower()), None)
+    starred_label = next((lbl for lbl in labels if lbl.name == 'Starred'), None)
+    trash_label = next((lbl for lbl in labels if lbl.name.lower() == 'trash'), None)
     if not inbox_label:
         inbox_label = ensure_inbox_label(current_user, commit=True)
         if inbox_label:
             labels.append(inbox_label)
+    if not starred_label:
+        starred_label = ensure_starred_label(current_user, commit=True)
+        if starred_label:
+            labels.append(starred_label)
 
     if not force_all and selected_label is None and inbox_label:
         selected_label = inbox_label.id
+
+    def _label_count(label_obj):
+        if not label_obj:
+            return 0
+        return Email.query.filter(
+            Email.user_id == current_user.id,
+            Email.labels.any(Label.id == label_obj.id)
+        ).count()
+
+    starred_count = _label_count(starred_label)
+    trash_count = _label_count(trash_label)
 
     query = Email.query.filter_by(user_id=current_user.id)
     if selected_label:
@@ -898,6 +961,10 @@ def dashboard():
         labels=labels,
         label_tree=label_tree,
         inbox_label=inbox_label,
+        starred_label=starred_label,
+        trash_label=trash_label,
+        starred_count=starred_count,
+        trash_count=trash_count,
         system_labels=[],
         total_emails=total_emails,
         inbox_count=inbox_count,
@@ -906,8 +973,7 @@ def dashboard():
         auto_sync_minutes=auto_sync_minutes,
         auto_sync_text=auto_sync_text,
         last_refresh_display=last_refresh_display,
-        ai_summaries_enabled=ai_summaries_enabled
-        ,
+        ai_summaries_enabled=ai_summaries_enabled,
         prefs=prefs
     )
 
@@ -1208,6 +1274,8 @@ def sync_emails():
 
     def generate():
         logger.debug("Streaming Gmail sync started for user %s", current_user.id)
+        if current_user.google_refresh_token and not current_user.google_access_token:
+            _refresh_google_access_token(current_user)
         if not (current_user.is_google_connected and current_user.google_access_token):
             logger.warning("User %s attempted sync without Google connection", current_user.id)
             yield f"data: {json.dumps({'error': 'Connect your Google Workspace account to sync emails.'})}\n\n"
@@ -1246,6 +1314,11 @@ def _run_due_auto_syncs():
         last_synced = user.last_synced_at
         if last_synced and (now - last_synced) < timedelta(minutes=interval_minutes):
             continue
+
+        if user.google_refresh_token and not user.google_access_token:
+            if not _refresh_google_access_token(user):
+                logger.warning("User %s auto sync skipped because Google refresh token is invalid", user.id)
+                continue
 
         if not _acquire_sync_slot(user.id):
             continue
@@ -1310,6 +1383,27 @@ def start_auto_sync_worker(app):
     _AUTO_SYNC_THREAD.start()
     app._auto_sync_worker_started = True
 
+def _disconnect_google_account(user):
+    user.google_access_token = None
+    user.google_refresh_token = None
+    user.is_google_connected = False
+    db.session.commit()
+
+
+def _refresh_google_access_token(user):
+    if not user.google_refresh_token:
+        return False
+    new_token = google_oauth.refresh_access_token(user.google_refresh_token)
+    if not new_token:
+        logger.warning("Invalid Google refresh token for user %s; disconnecting account", user.id)
+        _disconnect_google_account(user)
+        return False
+    if new_token != user.google_access_token:
+        user.google_access_token = new_token
+        db.session.commit()
+    return True
+
+
 def _sync_gmail_labels_for_user(user):
     """Fetch Gmail labels and mirror them locally for the provided user."""
     if not user.is_google_connected:
@@ -1320,6 +1414,9 @@ def _sync_gmail_labels_for_user(user):
             'skipped': 0,
             'deleted': 0
         }
+
+    if not user.google_access_token and user.google_refresh_token:
+        _refresh_google_access_token(user)
 
     try:
         access_token = user.google_access_token
@@ -1520,6 +1617,43 @@ def add_label_to_email(email_id):
         'success': True,
         'gmail_synced': gmail_synced,
         'label': label_payload
+    })
+
+
+@email_bp.route('/<int:email_id>/important', methods=['POST'])
+@login_required
+def mark_email_as_important(email_id):
+    email_obj = Email.query.filter_by(id=email_id, user_id=current_user.id).first_or_404()
+    payload = request.get_json(silent=True) or {}
+    desired = payload.get('important')
+    if desired is None:
+        email_obj.is_important = not email_obj.is_important
+    else:
+        email_obj.is_important = bool(desired)
+    label = ensure_starred_label(current_user, commit=False)
+    delta = 0
+    attached = False
+    if email_obj.is_important:
+        if label not in email_obj.labels:
+            email_obj.labels.append(label)
+            attached = True
+            delta = 1
+    else:
+        if label and label in email_obj.labels:
+            email_obj.labels.remove(label)
+            attached = True
+            delta = -1
+    if current_user.is_google_connected:
+        _sync_gmail_star(current_user, email_obj, email_obj.is_important)
+    try:
+        db.session.commit()
+    except Exception:
+        db.session.rollback()
+        return jsonify({'success': False, 'message': 'Unable to update importance flag.'}), 500
+    return jsonify({
+        'success': True,
+        'important': email_obj.is_important,
+        'delta': delta
     })
 
 @email_bp.route('/<int:email_id>/label/<int:label_id>', methods=['DELETE'])
@@ -2018,7 +2152,7 @@ def delete_emails():
 
     db.session.commit()
     logger.info(
-        "User %s deleted %s emails (remote failures: %s)",
+        "User %s moved %s emails to trash (remote failures: %s)",
         current_user.id,
         deleted,
         remote_failures
@@ -2034,6 +2168,8 @@ def delete_emails():
 
 def _sync_labels_to_gmail(user, email_obj, label_names):
     """Apply accepted labels back to Gmail if possible."""
+    if not user.google_access_token and user.google_refresh_token:
+        _refresh_google_access_token(user)
     access_token = user.google_access_token
     if not access_token:
         return False
@@ -2132,6 +2268,27 @@ def _trash_email_in_gmail(user, email_obj):
 
     logger.warning("User %s Gmail trash failed even after refresh", user.id)
     return False
+
+
+def _sync_gmail_star(user, email_obj, star=True):
+    """Add or remove the STARRED system label via Gmail API."""
+    if not user.is_google_connected or not user.google_access_token or not email_obj.message_id:
+        return False
+
+    token = user.google_access_token
+    if not token and user.google_refresh_token:
+        _refresh_google_access_token(user)
+        token = user.google_access_token
+    if not token:
+        return False
+
+    try:
+        if star:
+            return GmailHelper.apply_labels_to_message(token, email_obj.message_id, ['STARRED'])
+        return GmailHelper.remove_labels_from_message(token, email_obj.message_id, ['STARRED'])
+    except Exception:
+        logger.exception("Error syncing Gmail star for email %s", email_obj.id)
+        return False
 
 @label_bp.route('/all')
 @login_required
